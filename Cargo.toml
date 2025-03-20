@@ -6,3 +6,6 @@ edition = "2021"
 [dependencies]
 bytes = { version = "1.10.1", default-features = false }
 memmap2 = "0.9.5"
+miniz_oxide = "0.8.5"
+num-derive = "0.4.2"
+num-traits = "0.2.19"

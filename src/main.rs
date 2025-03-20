@@ -4,6 +4,7 @@ mod tar2;
 mod zip;
 
 fn main() -> std::io::Result<()> {
+    /*
     use std::rc::Rc;
     let file: &[u8] = include_bytes!("../test.tar");
     let mut d = file;
@@ -17,6 +18,7 @@ fn main() -> std::io::Result<()> {
         let src_val = tar::SrcVal::Dyn(&file);
         let json = tar::JsonVal::Src(Rc::new(src_val));
     }
+    */
 
     let mut args = std::env::args();
     args.next();
@@ -27,6 +29,6 @@ fn main() -> std::io::Result<()> {
     let b = bytes::Bytes::from_owner(mmap);
     let mut o = zip::Obj::default();
     zip::decode_zip(&mut o, b).unwrap();
-    println!("{o:?}");
+    //println!("{o:?}");
     Ok(())
 }
