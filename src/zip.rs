@@ -1,3 +1,4 @@
+use bitflags::bitflags;
 use bytes::Bytes;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -102,8 +103,8 @@ pub enum Atom {
 pub enum Val {
     Arr(Arr),
     Obj(Obj),
-    Atom(Atom /*, Option<Box<Val>>*/),
-    Fun(fn(Bytes) -> Val),
+    Atom(Atom, Option<Box<Val>>),
+    Lazy(Box<dyn Eval>),
 }
 
 impl Default for Val {
@@ -113,6 +114,23 @@ impl Default for Val {
 }
 
 impl Val {
+    pub fn unfold(self) -> Self {
+        match self {
+            Self::Arr(a) => Self::Arr(Arr(a.0.into_iter().map(|(b, v)| (b, v.unfold())).collect())),
+            Self::Obj(o) => Self::Obj(Obj(o
+                .0
+                .into_iter()
+                .map(|(n, b, v)| (n, b, v.unfold()))
+                .collect())),
+            Self::Atom(a, v) => Self::Atom(a, v.map(|v| Box::new(v.unfold()))),
+            Self::Lazy(l) => todo!(), //l.eval().unfold(),
+        }
+    }
+
+    fn lazy(l: impl Eval + 'static) -> Self {
+        Self::Lazy(Box::new(l))
+    }
+
     fn make_arr(&mut self) -> &mut Arr {
         *self = Val::Arr(Arr::default());
         match self {
@@ -132,7 +150,7 @@ impl Val {
 
 impl From<Atom> for Val {
     fn from(a: Atom) -> Self {
-        Self::Atom(a /*, None*/)
+        Self::Atom(a, None)
     }
 }
 
@@ -219,10 +237,34 @@ fn decode_eocd(o: &mut Obj, b: &mut Bytes) -> Result<EndOfCentralDirRecord> {
 
 #[derive(Debug)]
 struct Common {
+    flags: Flags,
     compression_method: u16,
     compressed_size: u32,
     filename_len: u16,
     extra_field_len: u16,
+}
+
+bitflags! {
+    #[derive(Clone, Debug)]
+    pub struct Flags: u16 {
+        const encrypted = 1 << 0;
+        const compression1 = 1 << 1;
+        const compression0 = 1 << 2;
+        const data_descriptor = 1 << 3;
+        const enhanced_deflation = 1 << 4;
+        const compressed_patched_data = 1 << 5;
+        const strong_encryption = 1 << 6;
+        // 1 unused field
+
+        // 3 unused fields
+        const language_encoding = 1 << 11;
+        // 1 reserved field
+        const mask_header_values = 1 << 13;
+        // 2 reserved fields
+
+        // the source may set any bits
+        const _ = !0;
+    }
 }
 
 #[derive(Debug, FromPrimitive)]
@@ -267,9 +309,35 @@ impl CompressionMethod {
     }
 }
 
+trait Eval: std::fmt::Debug {
+    fn eval(&self) -> Result<(Bytes, Val)>;
+}
+
+#[derive(Debug)]
+struct FlagsObj(Bytes, Flags);
+
+impl Eval for FlagsObj {
+    fn eval(&self) -> Result<(Bytes, Val)> {
+        let has = |name| self.1.contains(Flags::from_name(name).unwrap());
+        let f = |(name, _)| (name, self.0.clone(), Atom::Bool(has(name)).into());
+        let o = Obj(Flags::all().iter_names().map(f).collect());
+        Ok((self.0.clone(), Val::Obj(o)))
+    }
+}
+
+fn decode_flags(b: &mut Bytes) -> Result<(Bytes, Val, Flags)> {
+    let (b, _v, u) = u16_le(b)?;
+    let flags = Flags::from_bits_retain(u);
+    let v = Val::Atom(
+        Atom::U16(u),
+        Some(Val::lazy(FlagsObj(b.clone(), flags.clone())).into()),
+    );
+    Ok((b, v, flags))
+}
+
 fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
     o.add("version_needed", u16_le(b))?;
-    o.add("flags", raw(b, 2))?;
+    let flags = o.add("flags", decode_flags(b))?;
     let compression_method = o.add("compression_method", u16_le(b))?;
     o.add("last_modification_time", u16_le(b))?;
     o.add("last_modification_date", u16_le(b))?;
@@ -279,6 +347,7 @@ fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
     let filename_len = o.add("file_name_length", u16_le(b))?;
     let extra_field_len = o.add("extra_field_length", u16_le(b))?;
     Ok(Common {
+        flags,
         compression_method,
         compressed_size,
         filename_len,
@@ -288,6 +357,7 @@ fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
 
 #[derive(Debug)]
 struct CentralDirRecord {
+    common: Common,
     disk_nr_start: u16,
     local_file_offset: u32,
 }
@@ -308,51 +378,53 @@ fn decode_cdr(o: &mut Obj, b: &mut Bytes) -> Result<CentralDirRecord> {
     o.add("file_comment", raw(b, file_comment_len.into()))?;
 
     Ok(CentralDirRecord {
+        common,
         disk_nr_start,
         local_file_offset,
     })
 }
 
-fn deflate(b: &mut Bytes) -> Result<Vec<u8>> {
-    use miniz_oxide::inflate::stream::{inflate, InflateState};
-    use miniz_oxide::{DataFormat, MZFlush, MZStatus};
-    let mut state = InflateState::new(DataFormat::Raw);
-    let mut output = Vec::new();
-    let mut buf = [0; 4096];
-    loop {
-        let result = inflate(&mut state, b, &mut buf, MZFlush::None);
-        *b = b.slice(result.bytes_consumed..);
-        output.extend_from_slice(&buf[..result.bytes_written]);
-        if matches!(result.status.unwrap(), MZStatus::StreamEnd) {
-            return Ok(output);
-        }
+#[derive(Debug)]
+struct Uncompress(Bytes);
+
+impl Eval for Uncompress {
+    fn eval(&self) -> Result<(Bytes, Val)> {
+        use miniz_oxide::inflate::decompress_to_vec;
+        let b = decompress_to_vec(&self.0).ok().map(Bytes::from).unwrap();
+        Ok((b, Atom::Raw.into()))
     }
 }
 
-fn decode_local_file(o: &mut Obj, b: &mut Bytes) -> Result<()> {
+fn decode_local_file(o: &mut Obj, b: &mut Bytes, cdr_common: &Common) -> Result<()> {
     o.add("signature", precise(b, LOCAL_FILE_SIG))?;
-    let common = decode_common(o, b)?;
+    let lf_common = decode_common(o, b)?;
 
-    o.add("file_name", raw(b, common.filename_len.into()))?;
-    o.add("extra_fields", raw(b, common.extra_field_len.into()))?;
+    o.add("file_name", raw(b, lf_common.filename_len.into()))?;
+    o.add("extra_fields", raw(b, lf_common.extra_field_len.into()))?;
     // no file_comment here (unlike in central directory)
 
-    let compressed_size = common.compressed_size.try_into().unwrap();
-    let add_raw = |o: &mut Obj, field, b| o.add(field, Ok((b, Atom::Raw.into(), ())));
-    match CompressionMethod::from_u16(common.compression_method) {
-        Some(CompressionMethod::Deflated) => {
-            let (compressed, uncompressed) = consumed(b, deflate)?;
-            add_raw(o, "compressed", compressed)?;
-            add_raw(o, "uncompressed", uncompressed.into())?;
-        }
-        Some(CompressionMethod::None) => {
-            let (compressed, v, ()) = raw(b, compressed_size)?;
-            add_raw(o, "compressed", compressed.clone())?;
-            add_raw(o, "uncompressed", compressed)?;
-        }
-        _ if compressed_size != 0 => o.add("compressed", raw(b, compressed_size))?,
-        _ => (),
+    let compressed_size = match lf_common.compressed_size {
+        0 => cdr_common.compressed_size,
+        s => s,
     };
+    let compressed_size = compressed_size.try_into().unwrap();
+
+    if compressed_size > 0 {
+        let (compressed, v, ()) = raw(b, compressed_size)?;
+
+        let uncompressed = match CompressionMethod::from_u16(lf_common.compression_method) {
+            Some(CompressionMethod::Deflated) => Some(Val::lazy(Uncompress(compressed.clone()))),
+            Some(CompressionMethod::None) => Some(Atom::Raw.into()),
+            _ => None,
+        }
+        .map(|uc| {
+            let entry = ("uncompressed", compressed.clone(), uc);
+            Box::new(Val::Obj(Obj(vec![entry])))
+        });
+
+        let entry = (compressed, Val::Atom(Atom::Raw, uncompressed), ());
+        o.add("compressed", Ok(entry))?;
+    }
 
     // TODO: read data descriptor
     Ok(())
@@ -397,13 +469,12 @@ pub fn decode_zip(root: &mut Obj, b: Bytes) -> Result<()> {
     let lf_slice = b.slice(..eocd.cd_range().start);
     let lf = root.add_mut("local_files", lf_slice.clone(), |_, lf| {
         let a = lf.make_arr();
-        let offset = |cdr: &CentralDirRecord| {
-            (cdr.disk_nr_start == eocd.disk_nr).then_some(cdr.local_file_offset)
-        };
-        for offset in cd.iter().filter_map(offset) {
-            let offset: usize = offset.try_into().unwrap();
+        for cdr in cd.iter().filter(|cdr| cdr.disk_nr_start == eocd.disk_nr) {
+            let offset: usize = cdr.local_file_offset.try_into().unwrap();
             a.add_mut(lf_slice.slice(offset..), |lfr_slice, lfr| {
-                set_consumed(lfr_slice, |b| decode_local_file(lfr.make_obj(), b))
+                set_consumed(lfr_slice, |b| {
+                    decode_local_file(lfr.make_obj(), b, &cdr.common)
+                })
             })?;
         }
 

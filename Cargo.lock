@@ -18,12 +18,19 @@ checksum = "ace50bade8e6234aa140d9a2f552bbee1db4d353f69b8217bc503490fc1a9f26"
 name = "binspan"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "bytes",
  "memmap2",
  "miniz_oxide",
  "num-derive",
  "num-traits",
 ]
+
+[[package]]
+name = "bitflags"
+version = "2.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c8214115b7bf84099f1309324e63141d4c5d7cc26862f97a0a857dbefe165bd"
 
 [[package]]
 name = "bytes"
