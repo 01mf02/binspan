@@ -29,6 +29,7 @@ fn main() -> std::io::Result<()> {
     let b = bytes::Bytes::from_owner(mmap);
     let mut o = zip::Obj::default();
     zip::decode_zip(&mut o, b).unwrap();
-    //println!("{o:?}");
+    let o = o.unfold().unwrap();
+    println!("{o:?}");
     Ok(())
 }

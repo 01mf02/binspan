@@ -2,6 +2,7 @@ use bitflags::bitflags;
 use bytes::Bytes;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+use std::rc::Rc;
 
 const CENTRAL_DIR_SIG: &[u8; 4] = b"PK\x01\x02";
 const LOCAL_FILE_SIG: &[u8; 4] = b"PK\x03\x04";
@@ -51,10 +52,10 @@ impl Error {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Obj(Vec<(&'static str, Bytes, Val)>);
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Arr(Vec<(Bytes, Val)>);
 
 impl Obj {
@@ -90,7 +91,7 @@ impl Arr {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Atom {
     Bool(bool),
     U16(u16),
@@ -99,12 +100,26 @@ pub enum Atom {
     Raw,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Val {
+    Atom(Atom, Option<Rc<dyn Eval>>),
+    Many(Many),
+}
+
+#[derive(Clone, Debug)]
+pub enum Many {
     Arr(Arr),
     Obj(Obj),
-    Atom(Atom, Option<Box<Val>>),
-    Lazy(Box<dyn Eval>),
+}
+
+pub trait Eval: std::fmt::Debug {
+    fn eval(&self) -> Result<Many>;
+}
+
+impl Eval for Many {
+    fn eval(&self) -> Result<Many> {
+        Ok(self.clone())
+    }
 }
 
 impl Default for Val {
@@ -113,36 +128,50 @@ impl Default for Val {
     }
 }
 
-impl Val {
-    pub fn unfold(self) -> Self {
+impl Obj {
+    pub fn unfold(self) -> Result<Self> {
+        let f = |(k, b, v): (&'static str, Bytes, Val)| Ok((k, b, v.unfold()?));
+        self.0.into_iter().map(f).collect::<Result<_>>().map(Self)
+    }
+}
+
+impl Arr {
+    pub fn unfold(self) -> Result<Self> {
+        let f = |(b, v): (Bytes, Val)| Ok((b, v.unfold()?));
+        self.0.into_iter().map(f).collect::<Result<_>>().map(Self)
+    }
+}
+
+impl Many {
+    fn unfold(self) -> Result<Self> {
         match self {
-            Self::Arr(a) => Self::Arr(Arr(a.0.into_iter().map(|(b, v)| (b, v.unfold())).collect())),
-            Self::Obj(o) => Self::Obj(Obj(o
-                .0
-                .into_iter()
-                .map(|(n, b, v)| (n, b, v.unfold()))
-                .collect())),
-            Self::Atom(a, v) => Self::Atom(a, v.map(|v| Box::new(v.unfold()))),
-            Self::Lazy(l) => todo!(), //l.eval().unfold(),
+            Self::Arr(a) => a.unfold().map(Self::Arr),
+            Self::Obj(o) => o.unfold().map(Self::Obj),
+        }
+    }
+}
+
+impl Val {
+    fn unfold(self) -> Result<Self> {
+        let f = |l: Rc<dyn Eval>| Ok(Rc::new(l.eval()?.unfold()?) as Rc<dyn Eval>);
+        match self {
+            Self::Atom(a, l) => Ok(Self::Atom(a, l.map(f).transpose()?)),
+            Self::Many(m) => m.unfold().map(Self::Many),
         }
     }
 
-    fn lazy(l: impl Eval + 'static) -> Self {
-        Self::Lazy(Box::new(l))
-    }
-
     fn make_arr(&mut self) -> &mut Arr {
-        *self = Val::Arr(Arr::default());
+        *self = Val::Many(Many::Arr(Arr::default()));
         match self {
-            Val::Arr(a) => a,
+            Val::Many(Many::Arr(a)) => a,
             _ => panic!(),
         }
     }
 
     fn make_obj(&mut self) -> &mut Obj {
-        *self = Val::Obj(Obj::default());
+        *self = Val::Many(Many::Obj(Obj::default()));
         match self {
-            Val::Obj(o) => o,
+            Val::Many(Many::Obj(o)) => o,
             _ => panic!(),
         }
     }
@@ -267,72 +296,43 @@ bitflags! {
     }
 }
 
+#[allow(non_camel_case_types)]
 #[derive(Debug, FromPrimitive)]
 enum CompressionMethod {
-    None = 0,
-    Shrunk = 1,
-    ReducedCompressionFactor1 = 2,
-    ReducedCompressionFactor2 = 3,
-    ReducedCompressionFactor3 = 4,
-    ReducedCompressionFactor4 = 5,
-    Imploded = 6,
-    Deflated = 8,
-    EnhancedDeflated = 9,
-    PKWareDCLImploded = 10,
-    Bzip2 = 12,
-    LZMA = 14,
-    IBMTERSE = 18,
-    IBMLZ77z = 19,
-    PPMd = 98,
-}
-
-impl CompressionMethod {
-    fn as_str(&self) -> &'static str {
-        use CompressionMethod::*;
-        match self {
-            None => "none",
-            Shrunk => "shrunk",
-            ReducedCompressionFactor1 => "reduced_compression_factor1",
-            ReducedCompressionFactor2 => "reduced_compression_factor2",
-            ReducedCompressionFactor3 => "reduced_compression_factor3",
-            ReducedCompressionFactor4 => "reduced_compression_factor4",
-            Imploded => "imploded",
-            Deflated => "deflated",
-            EnhancedDeflated => "enhanced_deflated",
-            PKWareDCLImploded => "pk_ware_dcl_imploded",
-            Bzip2 => "bzip2",
-            LZMA => "lzma",
-            IBMTERSE => "ibmterse",
-            IBMLZ77z => "ibmlz77z",
-            PPMd => "pp_md",
-        }
-    }
-}
-
-trait Eval: std::fmt::Debug {
-    fn eval(&self) -> Result<(Bytes, Val)>;
+    none = 0,
+    shrunk = 1,
+    reduced_compression_factor1 = 2,
+    reduced_compression_factor2 = 3,
+    reduced_compression_factor3 = 4,
+    reduced_compression_factor4 = 5,
+    imploded = 6,
+    deflated = 8,
+    enhanced_deflated = 9,
+    pk_ware_dcl_imploded = 10,
+    bzip2 = 12,
+    lzma = 14,
+    ibmterse = 18,
+    ibmlz77z = 19,
+    pp_md = 98,
 }
 
 #[derive(Debug)]
 struct FlagsObj(Bytes, Flags);
 
 impl Eval for FlagsObj {
-    fn eval(&self) -> Result<(Bytes, Val)> {
+    fn eval(&self) -> Result<Many> {
         let has = |name| self.1.contains(Flags::from_name(name).unwrap());
         let f = |(name, _)| (name, self.0.clone(), Atom::Bool(has(name)).into());
         let o = Obj(Flags::all().iter_names().map(f).collect());
-        Ok((self.0.clone(), Val::Obj(o)))
+        Ok(Many::Obj(o))
     }
 }
 
 fn decode_flags(b: &mut Bytes) -> Result<(Bytes, Val, Flags)> {
     let (b, _v, u) = u16_le(b)?;
     let flags = Flags::from_bits_retain(u);
-    let v = Val::Atom(
-        Atom::U16(u),
-        Some(Val::lazy(FlagsObj(b.clone(), flags.clone())).into()),
-    );
-    Ok((b, v, flags))
+    let poly = Rc::new(FlagsObj(b.clone(), flags.clone()));
+    Ok((b, Val::Atom(Atom::U16(u), Some(poly)), flags))
 }
 
 fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
@@ -385,13 +385,21 @@ fn decode_cdr(o: &mut Obj, b: &mut Bytes) -> Result<CentralDirRecord> {
 }
 
 #[derive(Debug)]
-struct Uncompress(Bytes);
+struct Uncompress(CompressionMethod, Bytes);
 
 impl Eval for Uncompress {
-    fn eval(&self) -> Result<(Bytes, Val)> {
-        use miniz_oxide::inflate::decompress_to_vec;
-        let b = decompress_to_vec(&self.0).ok().map(Bytes::from).unwrap();
-        Ok((b, Atom::Raw.into()))
+    fn eval(&self) -> Result<Many> {
+        Ok(Many::Obj(Obj(match self.0 {
+            CompressionMethod::deflated => {
+                use miniz_oxide::inflate::decompress_to_vec;
+                decompress_to_vec(&self.1).ok().map(Bytes::from)
+            }
+            CompressionMethod::none => Some(self.1.clone()),
+            _ => None,
+        }
+        .into_iter()
+        .map(|uc| ("uncompressed", uc, Atom::Raw.into()))
+        .collect())))
     }
 }
 
@@ -410,18 +418,10 @@ fn decode_local_file(o: &mut Obj, b: &mut Bytes, cdr_common: &Common) -> Result<
     let compressed_size = compressed_size.try_into().unwrap();
 
     if compressed_size > 0 {
-        let (compressed, v, ()) = raw(b, compressed_size)?;
-
-        let uncompressed = match CompressionMethod::from_u16(lf_common.compression_method) {
-            Some(CompressionMethod::Deflated) => Some(Val::lazy(Uncompress(compressed.clone()))),
-            Some(CompressionMethod::None) => Some(Atom::Raw.into()),
-            _ => None,
-        }
-        .map(|uc| {
-            let entry = ("uncompressed", compressed.clone(), uc);
-            Box::new(Val::Obj(Obj(vec![entry])))
-        });
-
+        let (compressed, _v, ()) = raw(b, compressed_size)?;
+        let method = CompressionMethod::from_u16(lf_common.compression_method);
+        let uncompressed =
+            method.map(|method| Rc::new(Uncompress(method, compressed.clone())) as Rc<dyn Eval>);
         let entry = (compressed, Val::Atom(Atom::Raw, uncompressed), ());
         o.add("compressed", Ok(entry))?;
     }
@@ -467,7 +467,7 @@ pub fn decode_zip(root: &mut Obj, b: Bytes) -> Result<()> {
     })?;
 
     let lf_slice = b.slice(..eocd.cd_range().start);
-    let lf = root.add_mut("local_files", lf_slice.clone(), |_, lf| {
+    root.add_mut("local_files", lf_slice.clone(), |_, lf| {
         let a = lf.make_arr();
         for cdr in cd.iter().filter(|cdr| cdr.disk_nr_start == eocd.disk_nr) {
             let offset: usize = cdr.local_file_offset.try_into().unwrap();
@@ -477,9 +477,8 @@ pub fn decode_zip(root: &mut Obj, b: Bytes) -> Result<()> {
                 })
             })?;
         }
-
         Ok(())
-    });
+    })?;
 
     Ok(())
 }
