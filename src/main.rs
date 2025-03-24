@@ -26,10 +26,12 @@ fn main() -> std::io::Result<()> {
     let file = std::fs::File::open(filename)?;
     let mmap = unsafe { memmap2::Mmap::map(&file) }?;
 
+    let opts = zip::Opts::default();
     let b = bytes::Bytes::from_owner(mmap);
     let mut o = zip::Obj::default();
-    zip::decode_zip(&mut o, b).unwrap();
-    let o = o.unfold().unwrap();
+    let r = zip::decode_zip(&mut o, b, &opts);
+    //let o = o.unfold().unwrap();
     println!("{o:?}");
+    println!("{r:?}");
     Ok(())
 }

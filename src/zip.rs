@@ -18,6 +18,36 @@ pub struct Error {
     expect_typ: Expect,
 }
 
+pub struct Meta {
+    bytes: Bytes,
+    description: Option<&'static str>,
+    error: Option<Error>,
+    gap: bool,
+}
+
+impl Meta {
+    fn new(bytes: Bytes) -> Self {
+        Self {
+            bytes,
+            description: None,
+            error: None,
+            gap: false,
+        }
+    }
+
+    fn describe(self, description: &'static str) -> Self {
+        Self {
+            description: Some(description),
+            ..self
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct Opts {
+    force: bool,
+}
+
 #[derive(Debug)]
 pub enum Index {
     Str(&'static str),
@@ -113,12 +143,13 @@ pub enum Many {
 }
 
 pub trait Eval: std::fmt::Debug {
-    fn eval(&self) -> Result<Many>;
+    fn eval(&self, many: &mut Many) -> Result<()>;
 }
 
 impl Eval for Many {
-    fn eval(&self) -> Result<Many> {
-        Ok(self.clone())
+    fn eval(&self, many: &mut Many) -> Result<()> {
+        *many = self.clone();
+        Ok(())
     }
 }
 
@@ -153,7 +184,11 @@ impl Many {
 
 impl Val {
     fn unfold(self) -> Result<Self> {
-        let f = |l: Rc<dyn Eval>| Ok(Rc::new(l.eval()?.unfold()?) as Rc<dyn Eval>);
+        let f = |l: Rc<dyn Eval>| {
+            let mut many = Many::Arr(Arr::default());
+            l.eval(&mut many)?;
+            Ok(Rc::new(many.unfold()?) as Rc<dyn Eval>)
+        };
         match self {
             Self::Atom(a, l) => Ok(Self::Atom(a, l.map(f).transpose()?)),
             Self::Many(m) => m.unfold().map(Self::Many),
@@ -200,6 +235,12 @@ fn consumed<T>(b: &mut Bytes, f: impl FnOnce(&mut Bytes) -> Result<T>) -> Result
     Ok((start, y))
 }
 
+fn consume<T>(b: &mut Bytes, to: &mut Bytes, f: impl FnOnce(&mut Bytes) -> Result<T>) -> Result<T> {
+    let (consumed, y) = consumed(b, f)?;
+    *to = consumed;
+    Ok(y)
+}
+
 fn set_consumed<T>(b: &mut Bytes, f: impl FnOnce(&mut Bytes) -> Result<T>) -> Result<T> {
     let (consumed, y) = consumed(b, f)?;
     *b = consumed;
@@ -222,10 +263,10 @@ fn raw(b: &mut Bytes, n: usize) -> Result<(Bytes, Val, ())> {
     Ok((take(b, n)?, Atom::Raw.into(), ()))
 }
 
-fn precise(b: &mut Bytes, s: &'static [u8]) -> Result<(Bytes, Val, ())> {
+fn precise(b: &mut Bytes, s: &'static [u8], force: bool) -> Result<(Bytes, Val, ())> {
     let err = move |e: Error| e.with_typ(Expect::Raw(s));
     let b = take(b, s.len()).map_err(err)?;
-    if b == s {
+    if b == s || force {
         Ok((b, Atom::Raw.into(), ()))
     } else {
         Err(err(Error::new(b, s.len())))
@@ -247,8 +288,8 @@ impl EndOfCentralDirRecord {
     }
 }
 
-fn decode_eocd(o: &mut Obj, b: &mut Bytes) -> Result<EndOfCentralDirRecord> {
-    o.add("signature", precise(b, END_OF_CENTRAL_DIR_SIG))?;
+fn decode_eocd(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralDirRecord> {
+    o.add("signature", precise(b, END_OF_CENTRAL_DIR_SIG, opts.force))?;
     let disk_nr = o.add("disk_nr", u16_le(b))?;
     o.add("start_disk_nr", u16_le(b))?;
     o.add("nr_of_central_dir_records_on_disk", u16_le(b))?;
@@ -320,11 +361,11 @@ enum CompressionMethod {
 struct FlagsObj(Bytes, Flags);
 
 impl Eval for FlagsObj {
-    fn eval(&self) -> Result<Many> {
+    fn eval(&self, many: &mut Many) -> Result<()> {
         let has = |name| self.1.contains(Flags::from_name(name).unwrap());
         let f = |(name, _)| (name, self.0.clone(), Atom::Bool(has(name)).into());
-        let o = Obj(Flags::all().iter_names().map(f).collect());
-        Ok(Many::Obj(o))
+        *many = Many::Obj(Obj(Flags::all().iter_names().map(f).collect()));
+        Ok(())
     }
 }
 
@@ -362,8 +403,8 @@ struct CentralDirRecord {
     local_file_offset: u32,
 }
 
-fn decode_cdr(o: &mut Obj, b: &mut Bytes) -> Result<CentralDirRecord> {
-    o.add("signature", precise(b, CENTRAL_DIR_SIG))?;
+fn decode_cdr(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<CentralDirRecord> {
+    o.add("signature", precise(b, CENTRAL_DIR_SIG, opts.force))?;
     o.add("version_made_by", u16_le(b))?;
     let common = decode_common(o, b)?;
 
@@ -388,8 +429,8 @@ fn decode_cdr(o: &mut Obj, b: &mut Bytes) -> Result<CentralDirRecord> {
 struct Uncompress(CompressionMethod, Bytes);
 
 impl Eval for Uncompress {
-    fn eval(&self) -> Result<Many> {
-        Ok(Many::Obj(Obj(match self.0 {
+    fn eval(&self, many: &mut Many) -> Result<()> {
+        *many = Many::Obj(Obj(match self.0 {
             CompressionMethod::deflated => {
                 use miniz_oxide::inflate::decompress_to_vec;
                 decompress_to_vec(&self.1).ok().map(Bytes::from)
@@ -399,16 +440,20 @@ impl Eval for Uncompress {
         }
         .into_iter()
         .map(|uc| ("uncompressed", uc, Atom::Raw.into()))
-        .collect())))
+        .collect()));
+        Ok(())
     }
 }
 
-fn decode_local_file(o: &mut Obj, b: &mut Bytes, cdr_common: &Common) -> Result<()> {
-    o.add("signature", precise(b, LOCAL_FILE_SIG))?;
+fn decode_local_file(o: &mut Obj, b: &mut Bytes, opts: &Opts, cdr_common: &Common) -> Result<()> {
+    o.add("signature", precise(b, LOCAL_FILE_SIG, opts.force))?;
     let lf_common = decode_common(o, b)?;
 
     o.add("file_name", raw(b, lf_common.filename_len.into()))?;
-    o.add("extra_fields", raw(b, lf_common.extra_field_len.into()))?;
+    let extra_fields_slice = take(b, lf_common.extra_field_len.into())?;
+    o.add_mut("extra_fields", extra_fields_slice, |b, efs| {
+        decode_extra_fields(efs.make_arr(), b.clone())
+    })?;
     // no file_comment here (unlike in central directory)
 
     let compressed_size = match lf_common.compressed_size {
@@ -430,6 +475,15 @@ fn decode_local_file(o: &mut Obj, b: &mut Bytes, cdr_common: &Common) -> Result<
     Ok(())
 }
 
+fn decode_extra_fields(a: &mut Arr, mut b: Bytes) -> Result<()> {
+    while !b.is_empty() {
+        a.add_mut(b.clone(), |ef_slice, ef| {
+            consume(&mut b, ef_slice, |b| decode_extra_field(ef.make_obj(), b))
+        })?;
+    }
+    Ok(())
+}
+
 fn decode_extra_field(o: &mut Obj, b: &mut Bytes) -> Result<()> {
     o.add("tag", u16_le(b))?;
     let size = o.add("size", u16_le(b))?;
@@ -443,12 +497,12 @@ fn find_eocds(b: &[u8]) -> Option<usize> {
 }
 
 // TODO: slice() may panic!
-pub fn decode_zip(root: &mut Obj, b: Bytes) -> Result<()> {
+pub fn decode_zip(root: &mut Obj, b: Bytes, opts: &Opts) -> Result<()> {
     //let offset = |small: &Bytes| dbg!(small.as_ptr() as usize) - dbg!(b.as_ptr() as usize);
     let eocds_abs = find_eocds(&b).unwrap();
     let eocd_slice = || b.slice(eocds_abs..);
     let eocd = root.add_mut("end_of_central_dir_record", eocd_slice(), |_, eocd| {
-        decode_eocd(eocd.make_obj(), &mut eocd_slice())
+        decode_eocd(eocd.make_obj(), &mut eocd_slice(), &opts)
     })?;
 
     let mut cd_slice = b.slice(eocd.cd_range());
@@ -457,9 +511,9 @@ pub fn decode_zip(root: &mut Obj, b: Bytes) -> Result<()> {
         let mut cds = Vec::new();
         while !cd_slice.is_empty() {
             let cdr = cd.add_mut(cd_slice.clone(), |cdr_slice, cdr| {
-                let (consumed, cdr) = consumed(&mut cd_slice, |b| decode_cdr(cdr.make_obj(), b))?;
-                *cdr_slice = consumed;
-                Ok(cdr)
+                consume(&mut cd_slice, cdr_slice, |b| {
+                    decode_cdr(cdr.make_obj(), b, &opts)
+                })
             })?;
             cds.push(cdr);
         }
@@ -473,7 +527,7 @@ pub fn decode_zip(root: &mut Obj, b: Bytes) -> Result<()> {
             let offset: usize = cdr.local_file_offset.try_into().unwrap();
             a.add_mut(lf_slice.slice(offset..), |lfr_slice, lfr| {
                 set_consumed(lfr_slice, |b| {
-                    decode_local_file(lfr.make_obj(), b, &cdr.common)
+                    decode_local_file(lfr.make_obj(), b, &opts, &cdr.common)
                 })
             })?;
         }
