@@ -18,11 +18,13 @@ pub struct Error {
     expect_typ: Expect,
 }
 
+/// Metadata of a value.
+///
+/// This is precisely the information that gets lost when changing a value.
 pub struct Meta {
     bytes: Bytes,
     description: Option<&'static str>,
     error: Option<Error>,
-    gap: bool,
 }
 
 impl Meta {
@@ -31,7 +33,6 @@ impl Meta {
             bytes,
             description: None,
             error: None,
-            gap: false,
         }
     }
 
@@ -127,14 +128,16 @@ pub enum Atom {
     U16(u16),
     U32(u32),
     Str(String),
-    Raw,
+    Raw { gap: bool },
 }
 
 #[derive(Clone, Debug)]
 pub enum Val {
-    Atom(Atom, Option<Rc<dyn Eval>>),
+    Atom(Atom, Option<RcEval>),
     Many(Many),
 }
+
+type RcEval = Rc<dyn Eval>;
 
 #[derive(Clone, Debug)]
 pub enum Many {
@@ -155,7 +158,7 @@ impl Eval for Many {
 
 impl Default for Val {
     fn default() -> Self {
-        Atom::Raw.into()
+        Self::raw()
     }
 }
 
@@ -184,15 +187,19 @@ impl Many {
 
 impl Val {
     fn unfold(self) -> Result<Self> {
-        let f = |l: Rc<dyn Eval>| {
+        let f = |l: RcEval| {
             let mut many = Many::Arr(Arr::default());
             l.eval(&mut many)?;
-            Ok(Rc::new(many.unfold()?) as Rc<dyn Eval>)
+            Ok(Rc::new(many.unfold()?) as RcEval)
         };
         match self {
             Self::Atom(a, l) => Ok(Self::Atom(a, l.map(f).transpose()?)),
             Self::Many(m) => m.unfold().map(Self::Many),
         }
+    }
+
+    const fn raw() -> Self {
+        Self::Atom(Atom::Raw { gap: false }, None)
     }
 
     fn make_arr(&mut self) -> &mut Arr {
@@ -260,14 +267,14 @@ fn u32_le(b: &mut Bytes) -> Result<(Bytes, Val, u32)> {
 }
 
 fn raw(b: &mut Bytes, n: usize) -> Result<(Bytes, Val, ())> {
-    Ok((take(b, n)?, Atom::Raw.into(), ()))
+    Ok((take(b, n)?, Val::raw(), ()))
 }
 
 fn precise(b: &mut Bytes, s: &'static [u8], force: bool) -> Result<(Bytes, Val, ())> {
     let err = move |e: Error| e.with_typ(Expect::Raw(s));
     let b = take(b, s.len()).map_err(err)?;
     if b == s || force {
-        Ok((b, Atom::Raw.into(), ()))
+        Ok((b, Val::raw(), ()))
     } else {
         Err(err(Error::new(b, s.len())))
     }
@@ -439,7 +446,7 @@ impl Eval for Uncompress {
             _ => None,
         }
         .into_iter()
-        .map(|uc| ("uncompressed", uc, Atom::Raw.into()))
+        .map(|uc| ("uncompressed", uc, Val::raw()))
         .collect()));
         Ok(())
     }
@@ -466,8 +473,12 @@ fn decode_local_file(o: &mut Obj, b: &mut Bytes, opts: &Opts, cdr_common: &Commo
         let (compressed, _v, ()) = raw(b, compressed_size)?;
         let method = CompressionMethod::from_u16(lf_common.compression_method);
         let uncompressed =
-            method.map(|method| Rc::new(Uncompress(method, compressed.clone())) as Rc<dyn Eval>);
-        let entry = (compressed, Val::Atom(Atom::Raw, uncompressed), ());
+            method.map(|method| Rc::new(Uncompress(method, compressed.clone())) as RcEval);
+        let entry = (
+            compressed,
+            Val::Atom(Atom::Raw { gap: false }, uncompressed),
+            (),
+        );
         o.add("compressed", Ok(entry))?;
     }
 
