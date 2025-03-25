@@ -1,283 +1,16 @@
+use crate::decode::*;
 use bitflags::bitflags;
 use bytes::Bytes;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
-use std::rc::Rc;
 
 const CENTRAL_DIR_SIG: &[u8; 4] = b"PK\x01\x02";
 const LOCAL_FILE_SIG: &[u8; 4] = b"PK\x03\x04";
 const END_OF_CENTRAL_DIR_SIG: &[u8; 4] = b"PK\x05\x06";
 
-type Result<T, E = Error> = core::result::Result<T, E>;
-
-#[derive(Debug)]
-pub struct Error {
-    position: Bytes,
-    path: Vec<Index>,
-    expect_len: usize,
-    expect_typ: Expect,
-}
-
-/// Metadata of a value.
-///
-/// This is precisely the information that gets lost when changing a value.
-pub struct Meta {
-    bytes: Bytes,
-    description: Option<&'static str>,
-    error: Option<Error>,
-}
-
-impl Meta {
-    fn new(bytes: Bytes) -> Self {
-        Self {
-            bytes,
-            description: None,
-            error: None,
-        }
-    }
-
-    fn describe(self, description: &'static str) -> Self {
-        Self {
-            description: Some(description),
-            ..self
-        }
-    }
-}
-
 #[derive(Default)]
 pub struct Opts {
     force: bool,
-}
-
-#[derive(Debug)]
-pub enum Index {
-    Str(&'static str),
-    Int(usize),
-}
-
-#[derive(Debug)]
-pub enum Expect {
-    Bytes,
-    Int,
-    Raw(&'static [u8]),
-}
-
-impl Error {
-    fn new(position: Bytes, expect_len: usize) -> Self {
-        Self {
-            position,
-            path: Vec::new(),
-            expect_len,
-            expect_typ: Expect::Bytes,
-        }
-    }
-
-    fn with_index(mut self, i: Index) -> Self {
-        self.path.push(i);
-        self
-    }
-
-    fn with_typ(mut self, e: Expect) -> Self {
-        self.expect_typ = e;
-        self
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Obj(Vec<(&'static str, Bytes, Val)>);
-
-#[derive(Clone, Debug, Default)]
-pub struct Arr(Vec<(Bytes, Val)>);
-
-impl Obj {
-    fn add_mut<T, F>(&mut self, field: &'static str, b: Bytes, f: F) -> Result<T>
-    where
-        F: FnOnce(&mut Bytes, &mut Val) -> Result<T>,
-    {
-        self.0.push((field, b, Val::default()));
-        match self.0.last_mut() {
-            Some((_, b, v)) => f(b, v).map_err(|e| e.with_index(Index::Str(field))),
-            _ => unreachable!(),
-        }
-    }
-
-    fn add<T>(&mut self, field: &'static str, r: Result<(Bytes, Val, T)>) -> Result<T> {
-        let (b, v, y) = r.map_err(|e| e.with_index(Index::Str(field)))?;
-        self.0.push((field, b, v));
-        Ok(y)
-    }
-}
-
-impl Arr {
-    fn add_mut<T, F>(&mut self, b: Bytes, f: F) -> Result<T>
-    where
-        F: FnOnce(&mut Bytes, &mut Val) -> Result<T>,
-    {
-        let i = self.0.len();
-        self.0.push((b, Val::default()));
-        match self.0.last_mut() {
-            Some((b, v)) => f(b, v).map_err(|e| e.with_index(Index::Int(i))),
-            _ => unreachable!(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum Atom {
-    Bool(bool),
-    U16(u16),
-    U32(u32),
-    Str(String),
-    Raw { gap: bool },
-}
-
-#[derive(Clone, Debug)]
-pub enum Val {
-    Atom(Atom, Option<RcEval>),
-    Many(Many),
-}
-
-type RcEval = Rc<dyn Eval>;
-
-#[derive(Clone, Debug)]
-pub enum Many {
-    Arr(Arr),
-    Obj(Obj),
-}
-
-pub trait Eval: std::fmt::Debug {
-    fn eval(&self, many: &mut Many) -> Result<()>;
-}
-
-impl Eval for Many {
-    fn eval(&self, many: &mut Many) -> Result<()> {
-        *many = self.clone();
-        Ok(())
-    }
-}
-
-impl Default for Val {
-    fn default() -> Self {
-        Self::raw()
-    }
-}
-
-impl Obj {
-    pub fn unfold(self) -> Result<Self> {
-        let f = |(k, b, v): (&'static str, Bytes, Val)| Ok((k, b, v.unfold()?));
-        self.0.into_iter().map(f).collect::<Result<_>>().map(Self)
-    }
-}
-
-impl Arr {
-    pub fn unfold(self) -> Result<Self> {
-        let f = |(b, v): (Bytes, Val)| Ok((b, v.unfold()?));
-        self.0.into_iter().map(f).collect::<Result<_>>().map(Self)
-    }
-}
-
-impl Many {
-    fn unfold(self) -> Result<Self> {
-        match self {
-            Self::Arr(a) => a.unfold().map(Self::Arr),
-            Self::Obj(o) => o.unfold().map(Self::Obj),
-        }
-    }
-}
-
-impl Val {
-    fn unfold(self) -> Result<Self> {
-        let f = |l: RcEval| {
-            let mut many = Many::Arr(Arr::default());
-            l.eval(&mut many)?;
-            Ok(Rc::new(many.unfold()?) as RcEval)
-        };
-        match self {
-            Self::Atom(a, l) => Ok(Self::Atom(a, l.map(f).transpose()?)),
-            Self::Many(m) => m.unfold().map(Self::Many),
-        }
-    }
-
-    const fn raw() -> Self {
-        Self::Atom(Atom::Raw { gap: false }, None)
-    }
-
-    fn make_arr(&mut self) -> &mut Arr {
-        *self = Val::Many(Many::Arr(Arr::default()));
-        match self {
-            Val::Many(Many::Arr(a)) => a,
-            _ => panic!(),
-        }
-    }
-
-    fn make_obj(&mut self) -> &mut Obj {
-        *self = Val::Many(Many::Obj(Obj::default()));
-        match self {
-            Val::Many(Many::Obj(o)) => o,
-            _ => panic!(),
-        }
-    }
-}
-
-impl From<Atom> for Val {
-    fn from(a: Atom) -> Self {
-        Self::Atom(a, None)
-    }
-}
-
-fn take(b: &mut Bytes, n: usize) -> Result<Bytes> {
-    if n > b.len() {
-        Err(Error::new(b.clone(), n))
-    } else {
-        let b_ = b.slice(..n);
-        *b = b.slice(n..);
-        Ok(b_)
-    }
-}
-
-fn consumed<T>(b: &mut Bytes, f: impl FnOnce(&mut Bytes) -> Result<T>) -> Result<(Bytes, T)> {
-    let mut start = b.clone();
-    let y = f(b)?;
-    start.truncate(start.len() - b.len());
-    Ok((start, y))
-}
-
-fn consume<T>(b: &mut Bytes, to: &mut Bytes, f: impl FnOnce(&mut Bytes) -> Result<T>) -> Result<T> {
-    let (consumed, y) = consumed(b, f)?;
-    *to = consumed;
-    Ok(y)
-}
-
-fn set_consumed<T>(b: &mut Bytes, f: impl FnOnce(&mut Bytes) -> Result<T>) -> Result<T> {
-    let (consumed, y) = consumed(b, f)?;
-    *b = consumed;
-    Ok(y)
-}
-
-fn u16_le(b: &mut Bytes) -> Result<(Bytes, Val, u16)> {
-    let b = take(b, 2).map_err(|e| e.with_typ(Expect::Int))?;
-    let u = u16::from_le_bytes((*b).try_into().unwrap());
-    Ok((b, Atom::U16(u).into(), u))
-}
-
-fn u32_le(b: &mut Bytes) -> Result<(Bytes, Val, u32)> {
-    let b = take(b, 4).map_err(|e| e.with_typ(Expect::Int))?;
-    let u = u32::from_le_bytes((*b).try_into().unwrap());
-    Ok((b, Atom::U32(u).into(), u))
-}
-
-fn raw(b: &mut Bytes, n: usize) -> Result<(Bytes, Val, ())> {
-    Ok((take(b, n)?, Val::raw(), ()))
-}
-
-fn precise(b: &mut Bytes, s: &'static [u8], force: bool) -> Result<(Bytes, Val, ())> {
-    let err = move |e: Error| e.with_typ(Expect::Raw(s));
-    let b = take(b, s.len()).map_err(err)?;
-    if b == s || force {
-        Ok((b, Val::raw(), ()))
-    } else {
-        Err(err(Error::new(b, s.len())))
-    }
 }
 
 #[derive(Debug)]
@@ -364,23 +97,17 @@ enum CompressionMethod {
     pp_md = 98,
 }
 
-#[derive(Debug)]
-struct FlagsObj(Bytes, Flags);
-
-impl Eval for FlagsObj {
-    fn eval(&self, many: &mut Many) -> Result<()> {
-        let has = |name| self.1.contains(Flags::from_name(name).unwrap());
-        let f = |(name, _)| (name, self.0.clone(), Atom::Bool(has(name)).into());
-        *many = Many::Obj(Obj(Flags::all().iter_names().map(f).collect()));
-        Ok(())
-    }
+fn flags_obj(m: Meta, flags: Flags) -> Val {
+    let has = |name| flags.contains(Flags::from_name(name).unwrap());
+    let f = |(name, _)| (name, m.clone(), Val::Bool(has(name)));
+    Val::Obj(Obj(Flags::all().iter_names().map(f).collect()))
 }
 
-fn decode_flags(b: &mut Bytes) -> Result<(Bytes, Val, Flags)> {
-    let (b, _v, u) = u16_le(b)?;
+fn decode_flags(b: &mut Bytes) -> Result<(Meta, Val, Flags)> {
+    let (m, _v, u) = u16_le(b)?;
     let flags = Flags::from_bits_retain(u);
-    let poly = Rc::new(FlagsObj(b.clone(), flags.clone()));
-    Ok((b, Val::Atom(Atom::U16(u), Some(poly)), flags))
+    let (m_, flags_) = (m.clone(), flags.clone());
+    Ok((m, Val::lazy(move || flags_obj(m_, flags_)), flags))
 }
 
 fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
@@ -432,24 +159,32 @@ fn decode_cdr(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<CentralDirRecor
     })
 }
 
-#[derive(Debug)]
-struct Uncompress(CompressionMethod, Bytes);
-
-impl Eval for Uncompress {
-    fn eval(&self, many: &mut Many) -> Result<()> {
-        *many = Many::Obj(Obj(match self.0 {
-            CompressionMethod::deflated => {
-                use miniz_oxide::inflate::decompress_to_vec;
-                decompress_to_vec(&self.1).ok().map(Bytes::from)
-            }
-            CompressionMethod::none => Some(self.1.clone()),
-            _ => None,
-        }
-        .into_iter()
-        .map(|uc| ("uncompressed", uc, Val::raw()))
-        .collect()));
-        Ok(())
+fn uncompress(b: Bytes, method: CompressionMethod) -> Val {
+    use miniz_oxide::inflate::decompress_to_vec;
+    Val::Obj(Obj(match method {
+        CompressionMethod::deflated => decompress_to_vec(&b).ok().map(Bytes::from),
+        CompressionMethod::none => Some(b.clone()),
+        _ => None,
     }
+    .into_iter()
+    .map(|uc| ("uncompressed", Meta::from(uc), Val::default()))
+    .collect()))
+}
+
+fn decode_extra_field(o: &mut Obj, b: &mut Bytes) -> Result<()> {
+    o.add("tag", u16_le(b))?;
+    let size = o.add("size", u16_le(b))?;
+    o.add("data", raw(b, size.into()))?;
+    Ok(())
+}
+
+fn decode_extra_fields(a: &mut Arr, mut b: Bytes) -> Result<()> {
+    while !b.is_empty() {
+        a.add_mut(Meta::from(&b), |ef_meta, ef| {
+            consume(&mut b, ef_meta, |b| decode_extra_field(ef.make_obj(), b))
+        })?;
+    }
+    Ok(())
 }
 
 fn decode_local_file(o: &mut Obj, b: &mut Bytes, opts: &Opts, cdr_common: &Common) -> Result<()> {
@@ -457,9 +192,9 @@ fn decode_local_file(o: &mut Obj, b: &mut Bytes, opts: &Opts, cdr_common: &Commo
     let lf_common = decode_common(o, b)?;
 
     o.add("file_name", raw(b, lf_common.filename_len.into()))?;
-    let extra_fields_slice = take(b, lf_common.extra_field_len.into())?;
-    o.add_mut("extra_fields", extra_fields_slice, |b, efs| {
-        decode_extra_fields(efs.make_arr(), b.clone())
+    let efs_slice = take(b, lf_common.extra_field_len.into())?;
+    o.add_mut("extra_fields", Meta::from(&efs_slice), |_, efs| {
+        decode_extra_fields(efs.make_arr(), efs_slice)
     })?;
     // no file_comment here (unlike in central directory)
 
@@ -470,35 +205,14 @@ fn decode_local_file(o: &mut Obj, b: &mut Bytes, opts: &Opts, cdr_common: &Commo
     let compressed_size = compressed_size.try_into().unwrap();
 
     if compressed_size > 0 {
-        let (compressed, _v, ()) = raw(b, compressed_size)?;
+        let (compressed_meta, _v, compressed) = raw(b, compressed_size)?;
         let method = CompressionMethod::from_u16(lf_common.compression_method);
-        let uncompressed =
-            method.map(|method| Rc::new(Uncompress(method, compressed.clone())) as RcEval);
-        let entry = (
-            compressed,
-            Val::Atom(Atom::Raw { gap: false }, uncompressed),
-            (),
-        );
+        let f = |method| Val::lazy(move || uncompress(compressed.clone(), method));
+        let entry = (compressed_meta, method.map_or(Val::default(), f), ());
         o.add("compressed", Ok(entry))?;
     }
 
     // TODO: read data descriptor
-    Ok(())
-}
-
-fn decode_extra_fields(a: &mut Arr, mut b: Bytes) -> Result<()> {
-    while !b.is_empty() {
-        a.add_mut(b.clone(), |ef_slice, ef| {
-            consume(&mut b, ef_slice, |b| decode_extra_field(ef.make_obj(), b))
-        })?;
-    }
-    Ok(())
-}
-
-fn decode_extra_field(o: &mut Obj, b: &mut Bytes) -> Result<()> {
-    o.add("tag", u16_le(b))?;
-    let size = o.add("size", u16_le(b))?;
-    o.add("data", raw(b, size.into()))?;
     Ok(())
 }
 
@@ -509,19 +223,19 @@ fn find_eocds(b: &[u8]) -> Option<usize> {
 
 // TODO: slice() may panic!
 pub fn decode_zip(root: &mut Obj, b: Bytes, opts: &Opts) -> Result<()> {
-    //let offset = |small: &Bytes| dbg!(small.as_ptr() as usize) - dbg!(b.as_ptr() as usize);
     let eocds_abs = find_eocds(&b).unwrap();
-    let eocd_slice = || b.slice(eocds_abs..);
-    let eocd = root.add_mut("end_of_central_dir_record", eocd_slice(), |_, eocd| {
-        decode_eocd(eocd.make_obj(), &mut eocd_slice(), &opts)
+    let eocd_slice = b.slice(eocds_abs..);
+    let eocd_meta = Meta::from(&eocd_slice);
+    let eocd = root.add_mut("end_of_central_dir_record", eocd_meta, |_, eocd| {
+        decode_eocd(eocd.make_obj(), &mut eocd_slice.clone(), &opts)
     })?;
 
     let mut cd_slice = b.slice(eocd.cd_range());
-    let cd = root.add_mut("central_directories", cd_slice.clone(), |_, cd| {
+    let cd = root.add_mut("central_directories", Meta::from(&cd_slice), |_, cd| {
         let cd = cd.make_arr();
         let mut cds = Vec::new();
         while !cd_slice.is_empty() {
-            let cdr = cd.add_mut(cd_slice.clone(), |cdr_slice, cdr| {
+            let cdr = cd.add_mut(Meta::from(&cd_slice), |cdr_slice, cdr| {
                 consume(&mut cd_slice, cdr_slice, |b| {
                     decode_cdr(cdr.make_obj(), b, &opts)
                 })
@@ -532,12 +246,13 @@ pub fn decode_zip(root: &mut Obj, b: Bytes, opts: &Opts) -> Result<()> {
     })?;
 
     let lf_slice = b.slice(..eocd.cd_range().start);
-    root.add_mut("local_files", lf_slice.clone(), |_, lf| {
+    root.add_mut("local_files", Meta::from(&lf_slice), |_, lf| {
         let a = lf.make_arr();
         for cdr in cd.iter().filter(|cdr| cdr.disk_nr_start == eocd.disk_nr) {
             let offset: usize = cdr.local_file_offset.try_into().unwrap();
-            a.add_mut(lf_slice.slice(offset..), |lfr_slice, lfr| {
-                set_consumed(lfr_slice, |b| {
+            let lfr_slice = lf_slice.slice(offset..);
+            a.add_mut(Meta::from(&lfr_slice), |lfr_meta, lfr| {
+                consume(&mut lfr_slice.clone(), lfr_meta, |b| {
                     decode_local_file(lfr.make_obj(), b, &opts, &cdr.common)
                 })
             })?;

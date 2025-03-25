@@ -1,5 +1,6 @@
 #[macro_use]
 mod tar;
+mod decode;
 mod tar2;
 mod zip;
 
@@ -28,9 +29,9 @@ fn main() -> std::io::Result<()> {
 
     let opts = zip::Opts::default();
     let b = bytes::Bytes::from_owner(mmap);
-    let mut o = zip::Obj::default();
+    let mut o = decode::Obj::default();
     let r = zip::decode_zip(&mut o, b, &opts);
-    //let o = o.unfold().unwrap();
+    let o = decode::Val::Obj(o).eval();
     println!("{o:?}");
     println!("{r:?}");
     Ok(())
