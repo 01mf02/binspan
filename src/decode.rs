@@ -51,7 +51,7 @@ impl Error {
 /// This is precisely the information that gets lost when changing a value.
 #[derive(Clone, Debug)]
 pub struct Meta {
-    bytes: Bytes,
+    pub bytes: Bytes,
     description: Option<&'static str>,
     error: Option<Error>,
 }
@@ -75,6 +75,7 @@ impl From<&Bytes> for Meta {
 #[derive(Clone, Debug)]
 pub enum Val {
     Bool(bool),
+    U8(u8),
     U16(u16),
     U32(u32),
     Raw { gap: bool },
@@ -97,7 +98,8 @@ impl Val {
             Self::Lazy(l) => LazyCell::force(l).eval(),
             Self::Arr(Arr(a)) => Self::Arr(Arr(a.iter().map(fa).collect())),
             Self::Obj(Obj(o)) => Self::Obj(Obj(o.iter().map(fo).collect())),
-            Self::Raw { .. } | Self::Bool(_) | Self::U16(_) | Self::U32(_) => self.clone(),
+            Self::Raw { .. } | Self::Bool(_) => self.clone(),
+            Self::U8(_) | Self::U16(_) | Self::U32(_) => self.clone(),
         }
     }
 

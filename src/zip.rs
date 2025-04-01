@@ -110,12 +110,115 @@ fn decode_flags(b: &mut Bytes) -> Result<(Meta, Val, Flags)> {
     Ok((m, Val::lazy(move || flags_obj(m_, flags_)), flags))
 }
 
+// https://stackoverflow.com/a/8012148
+fn mask(u: u16, offset: u8, width: u8) -> u8 {
+    let mask = ((1 << width as u16) - 1) << offset;
+    ((u & mask) >> offset) as u8
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DosTime {
+    second: u8,
+    minute: u8,
+    hour: u8,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DosDate {
+    day: u8,
+    month: u8,
+    year: u16,
+}
+
+// https://learn.microsoft.com/en-gb/windows/win32/api/winbase/nf-winbase-dosdatetimetofiletime
+impl From<u16> for DosTime {
+    fn from(time: u16) -> Self {
+        Self {
+            second: mask(time, 0, 5) * 2,
+            minute: mask(time, 5, 6),
+            hour: mask(time, 11, 5),
+        }
+    }
+}
+
+impl From<u16> for DosDate {
+    fn from(date: u16) -> Self {
+        Self {
+            day: mask(date, 0, 5),
+            month: mask(date, 5, 4),
+            year: mask(date, 9, 7) as u16 + 1980,
+        }
+    }
+}
+
+#[test]
+fn dos_time() {
+    assert_eq!(
+        DosTime::from(0x4cea),
+        DosTime {
+            second: 20,
+            minute: 39,
+            hour: 9,
+        }
+    )
+}
+
+#[test]
+fn dos_date() {
+    assert_eq!(
+        DosDate::from(0x5a55),
+        DosDate {
+            day: 21,
+            month: 2,
+            year: 2025,
+        }
+    )
+}
+
+fn decode_fat_time(b: &mut Bytes) -> Result<(Meta, Val, DosTime)> {
+    let (meta, _, time) = u16_le(b)?;
+    let span = meta.bytes.clone();
+    let time = DosTime::from(time);
+    let f = move || {
+        let entry = |k, v| (k, Meta::from(span.clone()), Val::U8(v));
+        Val::Obj(Obj([
+            entry("second", time.second),
+            entry("minute", time.minute),
+            entry("hour", time.hour),
+        ]
+        .into()))
+    };
+    Ok((meta, Val::lazy(f), time))
+}
+
+fn decode_fat_date(b: &mut Bytes) -> Result<(Meta, Val, DosDate)> {
+    let (meta, _, date) = u16_le(b)?;
+    let span = meta.bytes.clone();
+    let date = DosDate::from(date);
+    let f = move || {
+        let entry = move |k, v| (k, Meta::from(span.clone()), v);
+        Val::Obj(Obj([
+            entry("day", Val::U8(date.day)),
+            entry("month", Val::U8(date.month)),
+            entry("year", Val::U16(date.year)),
+        ]
+        .into()))
+    };
+    Ok((meta, Val::lazy(f), date))
+}
+
 fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
     o.add("version_needed", u16_le(b))?;
     let flags = o.add("flags", decode_flags(b))?;
     let compression_method = o.add("compression_method", u16_le(b))?;
-    o.add("last_modification_time", u16_le(b))?;
-    o.add("last_modification_date", u16_le(b))?;
+    o.add_mut("last_modification", Meta::from(&*b), |lm_meta, lm| {
+        consume(b, lm_meta, |b| {
+            let lm = lm.make_obj();
+            lm.add("fat_time", decode_fat_time(b))?;
+            lm.add("fat_date", decode_fat_date(b))?;
+            Ok(())
+        })
+    })?;
     o.add("crc_32", u32_le(b))?;
     let compressed_size = o.add("compressed_size", u32_le(b))?;
     o.add("uncompressed_size", u32_le(b))?;

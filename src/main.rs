@@ -32,7 +32,7 @@ fn main() -> std::io::Result<()> {
     let mut o = decode::Obj::default();
     let r = zip::decode_zip(&mut o, b, &opts);
     let o = decode::Val::Obj(o).eval();
-    println!("{o:?}");
-    println!("{r:?}");
+    dbg!(o);
+    dbg!(r.unwrap());
     Ok(())
 }
