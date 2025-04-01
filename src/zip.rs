@@ -207,6 +207,31 @@ fn decode_fat_date(b: &mut Bytes) -> Result<(Meta, Val, DosDate)> {
     Ok((meta, Val::lazy(f), date))
 }
 
+#[derive(Default)]
+struct Zip64 {
+    uncompressed_size: Option<u64>,
+    compressed_size: Option<u64>,
+    local_file_offset: Option<u64>,
+    disk_nr_start: Option<u32>,
+}
+
+fn decode_zip64(o: &mut Obj, b: &mut Bytes) -> Result<Zip64> {
+    let mut zip64 = Zip64::default();
+    if !b.is_empty() {
+        zip64.uncompressed_size = Some(o.add("uncompressed_size", u64_le(b))?);
+    }
+    if !b.is_empty() {
+        zip64.compressed_size = Some(o.add("compressed_size", u64_le(b))?);
+    }
+    if !b.is_empty() {
+        zip64.local_file_offset = Some(o.add("local_file_offset", u64_le(b))?);
+    }
+    if !b.is_empty() {
+        zip64.disk_nr_start = Some(o.add("disk_nr_start", u32_le(b))?);
+    }
+    Ok(zip64)
+}
+
 fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
     o.add("version_needed", u16_le(b))?;
     let flags = o.add("flags", decode_flags(b))?;
@@ -275,10 +300,18 @@ fn uncompress(b: Bytes, method: CompressionMethod) -> Val {
 }
 
 fn decode_extra_field(o: &mut Obj, b: &mut Bytes) -> Result<()> {
-    o.add("tag", u16_le(b))?;
+    let tag = o.add("tag", u16_le(b))?;
     let size = o.add("size", u16_le(b))?;
-    o.add("data", raw(b, size.into()))?;
-    Ok(())
+    let (meta, v, mut b) = raw(b, size.into())?;
+    o.add_mut("data", meta, |_, d| match tag {
+        0x001 => decode_zip64(d.make_obj(), &mut b).map(|_| ()),
+        // TODO: extended timestamp
+        //0x5455 => todo!(),
+        _ => {
+            *d = v;
+            Ok(())
+        }
+    })
 }
 
 fn decode_extra_fields(a: &mut Arr, mut b: Bytes) -> Result<()> {

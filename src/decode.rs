@@ -78,6 +78,7 @@ pub enum Val {
     U8(u8),
     U16(u16),
     U32(u32),
+    U64(u64),
     Raw { gap: bool },
     Arr(Arr),
     Obj(Obj),
@@ -99,7 +100,7 @@ impl Val {
             Self::Arr(Arr(a)) => Self::Arr(Arr(a.iter().map(fa).collect())),
             Self::Obj(Obj(o)) => Self::Obj(Obj(o.iter().map(fo).collect())),
             Self::Raw { .. } | Self::Bool(_) => self.clone(),
-            Self::U8(_) | Self::U16(_) | Self::U32(_) => self.clone(),
+            Self::U8(_) | Self::U16(_) | Self::U32(_) | Self::U64(_) => self.clone(),
         }
     }
 
@@ -206,6 +207,12 @@ pub fn u32_le(b: &mut Bytes) -> Result<(Meta, Val, u32)> {
     let b = take(b, 4).map_err(|e| e.with_typ(Expect::Int))?;
     let u = u32::from_le_bytes((*b).try_into().unwrap());
     Ok((Meta::from(b), Val::U32(u), u))
+}
+
+pub fn u64_le(b: &mut Bytes) -> Result<(Meta, Val, u64)> {
+    let b = take(b, 8).map_err(|e| e.with_typ(Expect::Int))?;
+    let u = u64::from_le_bytes((*b).try_into().unwrap());
+    Ok((Meta::from(b), Val::U64(u), u))
 }
 
 pub fn raw(b: &mut Bytes, n: usize) -> Result<(Meta, Val, Bytes)> {
