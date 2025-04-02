@@ -7,6 +7,7 @@ use num_traits::FromPrimitive;
 const CENTRAL_DIR_SIG: &[u8; 4] = b"PK\x01\x02";
 const LOCAL_FILE_SIG: &[u8; 4] = b"PK\x03\x04";
 const END_OF_CENTRAL_DIR_SIG: &[u8; 4] = b"PK\x05\x06";
+const DATA_INDICATOR_SIG: &[u8; 4] = b"PK\x07\x08";
 
 #[derive(Default)]
 pub struct Opts {
@@ -262,7 +263,15 @@ fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
 struct CentralDirRecord {
     common: Common,
     disk_nr_start: u16,
-    local_file_offset: u32,
+    local_file_offset: u64,
+}
+
+fn decode_name_and_fields(o: &mut Obj, b: &mut Bytes, common: &Common) -> Result<Zip64> {
+    o.add("file_name", raw(b, common.filename_len.into()))?;
+    let efs_slice = take(b, common.extra_field_len.into())?;
+    o.add_mut("extra_fields", Meta::from(&efs_slice), |_, efs| {
+        decode_extra_fields(efs.make_arr(), efs_slice)
+    })
 }
 
 fn decode_cdr(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<CentralDirRecord> {
@@ -276,14 +285,13 @@ fn decode_cdr(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<CentralDirRecor
     o.add("external_file_attributes", u32_le(b))?;
     let local_file_offset = o.add("relative_offset_of_local_file_header", u32_le(b))?;
 
-    o.add("file_name", raw(b, common.filename_len.into()))?;
-    o.add("extra_fields", raw(b, common.extra_field_len.into()))?;
+    let zip64 = decode_name_and_fields(o, b, &common)?;
     o.add("file_comment", raw(b, file_comment_len.into()))?;
 
     Ok(CentralDirRecord {
         common,
         disk_nr_start,
-        local_file_offset,
+        local_file_offset: zip64.local_file_offset.unwrap_or(local_file_offset.into()),
     })
 }
 
@@ -299,43 +307,53 @@ fn uncompress(b: Bytes, method: CompressionMethod) -> Val {
     .collect()))
 }
 
-fn decode_extra_field(o: &mut Obj, b: &mut Bytes) -> Result<()> {
+fn decode_extra_field(o: &mut Obj, b: &mut Bytes) -> Result<Option<Zip64>> {
     let tag = o.add("tag", u16_le(b))?;
     let size = o.add("size", u16_le(b))?;
     let (meta, v, mut b) = raw(b, size.into())?;
     o.add_mut("data", meta, |_, d| match tag {
-        0x001 => decode_zip64(d.make_obj(), &mut b).map(|_| ()),
+        0x001 => decode_zip64(d.make_obj(), &mut b).map(Some),
         // TODO: extended timestamp
         //0x5455 => todo!(),
         _ => {
             *d = v;
-            Ok(())
+            Ok(None)
         }
     })
 }
 
-fn decode_extra_fields(a: &mut Arr, mut b: Bytes) -> Result<()> {
+fn decode_extra_fields(a: &mut Arr, mut b: Bytes) -> Result<Zip64> {
+    let mut zip64 = Zip64::default();
     while !b.is_empty() {
-        a.add_mut(Meta::from(&b), |ef_meta, ef| {
+        let y = a.add_mut(Meta::from(&b), |ef_meta, ef| {
             consume(&mut b, ef_meta, |b| decode_extra_field(ef.make_obj(), b))
         })?;
+        zip64 = y.unwrap_or(zip64);
     }
+    Ok(zip64)
+}
+
+fn decode_data_indicator(o: &mut Obj, b: &mut Bytes) -> Result<()> {
+    if b.starts_with(DATA_INDICATOR_SIG) {
+        o.add("signature", precise(b, DATA_INDICATOR_SIG, true))?;
+    }
+    o.add("crc32_uncompressed", u32_le(b))?;
+    o.add("compressed_size", u32_le(b))?;
+    o.add("uncompressed_size", u32_le(b))?;
     Ok(())
 }
 
 fn decode_local_file(o: &mut Obj, b: &mut Bytes, opts: &Opts, cdr_common: &Common) -> Result<()> {
     o.add("signature", precise(b, LOCAL_FILE_SIG, opts.force))?;
     let lf_common = decode_common(o, b)?;
-
-    o.add("file_name", raw(b, lf_common.filename_len.into()))?;
-    let efs_slice = take(b, lf_common.extra_field_len.into())?;
-    o.add_mut("extra_fields", Meta::from(&efs_slice), |_, efs| {
-        decode_extra_fields(efs.make_arr(), efs_slice)
-    })?;
+    let zip64 = decode_name_and_fields(o, b, &lf_common)?;
     // no file_comment here (unlike in central directory)
 
-    let compressed_size = match lf_common.compressed_size {
-        0 => cdr_common.compressed_size,
+    let compressed_size = match zip64
+        .compressed_size
+        .unwrap_or(lf_common.compressed_size.into())
+    {
+        0 => cdr_common.compressed_size.into(),
         s => s,
     };
     let compressed_size = compressed_size.try_into().unwrap();
@@ -348,7 +366,11 @@ fn decode_local_file(o: &mut Obj, b: &mut Bytes, opts: &Opts, cdr_common: &Commo
         o.add("compressed", Ok(entry))?;
     }
 
-    // TODO: read data descriptor
+    if lf_common.flags.contains(Flags::data_descriptor) {
+        o.add_mut("data_indicator", Meta::from(&*b), |dd_meta, dd| {
+            consume(b, dd_meta, |b| decode_data_indicator(dd.make_obj(), b))
+        })?;
+    }
     Ok(())
 }
 
