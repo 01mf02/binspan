@@ -57,7 +57,7 @@ struct Common {
 
 bitflags! {
     #[derive(Clone, Debug)]
-    pub struct Flags: u16 {
+    struct Flags: u16 {
         const encrypted = 1 << 0;
         const compression1 = 1 << 1;
         const compression0 = 1 << 2;
@@ -98,17 +98,21 @@ enum CompressionMethod {
     pp_md = 98,
 }
 
-fn flags_obj(m: Meta, flags: Flags) -> Val {
-    let has = |name| flags.contains(Flags::from_name(name).unwrap());
-    let f = |(name, _)| (name, m.clone(), Val::Bool(has(name)));
-    Val::Obj(Obj(Flags::all().iter_names().map(f).collect()))
+macro_rules! flags_obj {
+    ($meta:ident, $flags:ident, $ty: ident) => {{
+        let has = |name| $flags.contains($ty::from_name(name).unwrap());
+        let f = |(name, _)| (name, $meta.clone(), Val::Bool(has(name)));
+        Val::Obj(Obj($ty::all().iter_names().map(f).collect()))
+    }};
 }
 
-fn decode_flags(b: &mut Bytes) -> Result<(Meta, Val, Flags)> {
-    let (m, _v, u) = u16_le(b)?;
-    let flags = Flags::from_bits_retain(u);
-    let (m_, flags_) = (m.clone(), flags.clone());
-    Ok((m, Val::lazy(move || flags_obj(m_, flags_)), flags))
+macro_rules! lazy_flags {
+    ($input: expr, $ty: ident) => {{
+        let (m, _v, u) = $input;
+        let flags = $ty::from_bits_retain(u);
+        let (m_, flags_) = (m.clone(), flags.clone());
+        (m, Val::lazy(move || flags_obj!(m_, flags_, $ty)), flags)
+    }};
 }
 
 // https://stackoverflow.com/a/8012148
@@ -208,6 +212,34 @@ fn decode_fat_date(b: &mut Bytes) -> Result<(Meta, Val, DosDate)> {
     Ok((meta, Val::lazy(f), date))
 }
 
+bitflags! {
+    #[derive(Clone, Debug)]
+    struct Timestamp: u8 {
+        const modification_time_present = 1 << 0;
+        const access_time_present = 1 << 1;
+        const creation_time_present = 1 << 2;
+        // 5 unused fields
+
+        // the source may set any bits
+        const _ = !0;
+    }
+}
+
+fn decode_extended_timestamp(o: &mut Obj, b: &mut Bytes) -> Result<()> {
+    let flags = o.add("flags", Ok(lazy_flags!(le::u8(b)?, Timestamp)))?;
+    let times = [
+        ("modification_time", Timestamp::modification_time_present),
+        ("access_time", Timestamp::access_time_present),
+        ("creation_time", Timestamp::creation_time_present),
+    ];
+    for (key, flag) in times {
+        if flags.contains(flag) && !b.is_empty() {
+            o.add(key, le::u32(b))?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct Zip64 {
     uncompressed_size: Option<u64>,
@@ -235,7 +267,7 @@ fn decode_zip64(o: &mut Obj, b: &mut Bytes) -> Result<Zip64> {
 
 fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
     o.add("version_needed", u16_le(b))?;
-    let flags = o.add("flags", decode_flags(b))?;
+    let flags = o.add("flags", Ok(lazy_flags!(u16_le(b)?, Flags)))?;
     let compression_method = o.add("compression_method", u16_le(b))?;
     o.add_mut("last_modification", Meta::from(&*b), |lm_meta, lm| {
         consume(b, lm_meta, |b| {
@@ -313,8 +345,7 @@ fn decode_extra_field(o: &mut Obj, b: &mut Bytes) -> Result<Option<Zip64>> {
     let (meta, v, mut b) = raw(b, size.into())?;
     o.add_mut("data", meta, |_, d| match tag {
         0x001 => decode_zip64(d.make_obj(), &mut b).map(Some),
-        // TODO: extended timestamp
-        //0x5455 => todo!(),
+        0x5455 => decode_extended_timestamp(d.make_obj(), &mut b).map(|_| None),
         _ => {
             *d = v;
             Ok(None)
