@@ -197,23 +197,25 @@ pub fn consume<T>(
     Ok(y)
 }
 
-pub fn u16_le(b: &mut Bytes) -> Result<(Meta, Val, u16)> {
-    let b = take(b, 2).map_err(|e| e.with_typ(Expect::Int))?;
-    let u = u16::from_le_bytes((*b).try_into().unwrap());
-    Ok((Meta::from(b), Val::U16(u), u))
+macro_rules! decode_int {
+    ($ty:ident, $val:expr, $width: expr) => {
+        use super::*;
+        pub fn $ty(b: &mut Bytes) -> Result<(Meta, Val, $ty)> {
+            let b = take(b, $width).map_err(|e| e.with_typ(Expect::Int))?;
+            let u = $ty::from_le_bytes((*b).try_into().unwrap());
+            Ok((Meta::from(b), $val(u), u))
+        }
+    };
 }
 
-pub fn u32_le(b: &mut Bytes) -> Result<(Meta, Val, u32)> {
-    let b = take(b, 4).map_err(|e| e.with_typ(Expect::Int))?;
-    let u = u32::from_le_bytes((*b).try_into().unwrap());
-    Ok((Meta::from(b), Val::U32(u), u))
+pub mod le {
+    decode_int!(u8, Val::U8, 1);
+    decode_int!(u16, Val::U16, 2);
+    decode_int!(u32, Val::U32, 4);
+    decode_int!(u64, Val::U64, 8);
 }
 
-pub fn u64_le(b: &mut Bytes) -> Result<(Meta, Val, u64)> {
-    let b = take(b, 8).map_err(|e| e.with_typ(Expect::Int))?;
-    let u = u64::from_le_bytes((*b).try_into().unwrap());
-    Ok((Meta::from(b), Val::U64(u), u))
-}
+pub use le::{u16 as u16_le, u32 as u32_le, u64 as u64_le};
 
 pub fn raw(b: &mut Bytes, n: usize) -> Result<(Meta, Val, Bytes)> {
     let b = take(b, n)?;
