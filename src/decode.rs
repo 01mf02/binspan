@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use core::cell::LazyCell;
+use core::ops::{Bound, Range, RangeBounds};
 use std::rc::Rc;
 
 pub type Result<T = (), E = Error> = core::result::Result<T, E>;
@@ -178,6 +179,34 @@ pub fn take(b: &mut Bytes, n: usize) -> Result<Bytes> {
         *b = b.slice(n..);
         Ok(b_)
     }
+}
+
+fn to_range(bounds: impl RangeBounds<usize>, len: usize) -> Result<Range<usize>, usize> {
+    use core::ops::Bound;
+    let begin = match bounds.start_bound() {
+        Bound::Included(&n) => n,
+        Bound::Excluded(&n) => n.checked_add(1).ok_or(n)?,
+        Bound::Unbounded => 0,
+    };
+    if begin > len {
+        return Err(begin)
+    }
+
+    let end = match bounds.end_bound() {
+        Bound::Included(&n) => n.checked_add(1).ok_or(n)?,
+        Bound::Excluded(&n) => n,
+        Bound::Unbounded => len,
+    };
+    if end >= len {
+        return Err(end)
+    }
+
+    Ok(begin..end)
+}
+
+// Panics if `range.start > range.end`!
+pub fn try_slice(b: &Bytes, range: impl RangeBounds<usize>) -> Result<Bytes> {
+    Ok(b.slice(to_range(range, b.len()).map_err(|n| Error::new(b.clone(), n))?))
 }
 
 fn consumed<T>(b: &mut Bytes, f: impl FnOnce(&mut Bytes) -> Result<T>) -> Result<(Bytes, T)> {
