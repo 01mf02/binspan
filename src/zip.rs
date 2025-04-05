@@ -266,7 +266,6 @@ fn decode_zip64(o: &mut Obj, b: &mut Bytes) -> Result<Zip64> {
 }
 
 fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
-    o.add("version_needed", u16_le(b))?;
     let flags = o.add("flags", Ok(lazy_flags!(u16_le(b)?, Flags)))?;
     let compression_method = o.add("compression_method", u16_le(b))?;
     o.add_mut("last_modification", Meta::from(&*b), |lm_meta, lm| {
@@ -309,6 +308,7 @@ fn decode_name_and_fields(o: &mut Obj, b: &mut Bytes, common: &Common) -> Result
 fn decode_cdr(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<CentralDirRecord> {
     o.add("signature", precise(b, CENTRAL_DIR_SIG, opts.force))?;
     o.add("version_made_by", u16_le(b))?;
+    o.add("version_needed", u16_le(b))?;
     let common = decode_common(o, b)?;
 
     let file_comment_len = o.add("file_comment_length", u16_le(b))?;
@@ -376,6 +376,7 @@ fn decode_data_indicator(o: &mut Obj, b: &mut Bytes) -> Result<()> {
 
 fn decode_local_file(o: &mut Obj, b: &mut Bytes, opts: &Opts, cdr_common: &Common) -> Result<()> {
     o.add("signature", precise(b, LOCAL_FILE_SIG, opts.force))?;
+    o.add("version_needed", u16_le(b))?;
     let lf_common = decode_common(o, b)?;
     let zip64 = decode_name_and_fields(o, b, &lf_common)?;
     // no file_comment here (unlike in central directory)
