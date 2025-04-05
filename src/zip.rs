@@ -515,7 +515,6 @@ pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result<()> {
     let lf_slice = try_slice(&b, ..eocd.cd_range().start)?;
     root.add_mut("local_files", Meta::from(&lf_slice), |_, lf| {
         let a = lf.make_arr();
-        // TODO! as u16
         for cdr in cd.iter().filter(|cdr| cdr.disk_nr_start == eocd.disk_nr) {
             let offset: usize = cdr.local_file_offset.try_into().unwrap();
             let lfr_slice = lf_slice.slice(offset..);
