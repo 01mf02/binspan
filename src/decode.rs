@@ -188,20 +188,18 @@ fn to_range(bounds: impl RangeBounds<usize>, len: usize) -> Result<Range<usize>,
         Bound::Excluded(&n) => n.checked_add(1).ok_or(n)?,
         Bound::Unbounded => 0,
     };
-    if begin > len {
-        return Err(begin)
-    }
-
     let end = match bounds.end_bound() {
         Bound::Included(&n) => n.checked_add(1).ok_or(n)?,
         Bound::Excluded(&n) => n,
         Bound::Unbounded => len,
     };
-    if end >= len {
-        return Err(end)
-    }
 
-    Ok(begin..end)
+    let max = core::cmp::max(begin, end);
+    if max > len {
+        Err(max)
+    } else {
+        Ok(begin..end)
+    }
 }
 
 // Panics if `range.start > range.end`!
