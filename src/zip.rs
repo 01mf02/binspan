@@ -417,6 +417,7 @@ pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result<()> {
     let eocd_meta = Meta::from(&eocd_slice);
     let eocd = root.add_mut("end_of_central_dir_record", eocd_meta, |_, eocd| {
         decode_eocd(eocd.make_obj(), &mut eocd_slice.clone(), &opts)
+        decode_eocd(eocd.make_obj(), &mut eocd_slice, &opts)
     })?;
 
     let mut cd_slice = try_slice(&b, eocd.cd_range())?;
