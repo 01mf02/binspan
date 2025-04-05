@@ -470,18 +470,18 @@ fn find(b: &[u8], sig: &[u8; 4]) -> Option<usize> {
     Some(b.len() - (b.windows(4).rev().take(128).position(is_eocds)? + 4))
 }
 
-pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result<()> {
+fn decode_eocds(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralDirRecord> {
     let eocds_abs = find(&b, END_OF_CENTRAL_DIR_SIG).unwrap();
     let mut eocd_slice = b.split_off(eocds_abs);
     let eocd_meta = Meta::from(&eocd_slice);
-    let mut eocd = root.add_mut("end_of_central_dir_record", eocd_meta, |_, eocd| {
+    let eocd = o.add_mut("end_of_central_dir_record", eocd_meta, |_, eocd| {
         decode_eocd(eocd.make_obj(), &mut eocd_slice, &opts)
     })?;
 
     if let Some(eocdl_abs) = find(&b, END_OF_CENTRAL_DIR_LOCATOR_SIG) {
         let mut eocdl_slice = b.split_off(eocdl_abs);
         let eocdl_meta = Meta::from(&eocdl_slice);
-        let offset_eocd = root.add_mut(
+        let offset_eocd = o.add_mut(
             "end_of_central_directory_locator",
             eocdl_meta,
             |_, eocdl| decode_eocdl(eocdl.make_obj(), &mut eocdl_slice, opts),
@@ -490,12 +490,18 @@ pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result<()> {
 
         let mut eocd_slice = try_slice(&b, offset_eocd..)?;
         let eocd_meta = Meta::from(&eocd_slice);
-        eocd = root.add_mut(
+        o.add_mut(
             "end_of_central_directory_record_zip64",
             eocd_meta,
             |_, eocd| decode_eocd64(eocd.make_obj(), &mut eocd_slice, opts),
-        )?;
+        )
+    } else {
+        Ok(eocd)
     }
+}
+
+pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result<()> {
+    let eocd = decode_eocds(root, &mut b, opts)?;
 
     let mut cd_slice = try_slice(&b, eocd.cd_range())?;
     let cd = root.add_mut("central_directories", Meta::from(&cd_slice), |_, cd| {
