@@ -7,6 +7,8 @@ use num_traits::FromPrimitive;
 const CENTRAL_DIR_SIG: &[u8; 4] = b"PK\x01\x02";
 const LOCAL_FILE_SIG: &[u8; 4] = b"PK\x03\x04";
 const END_OF_CENTRAL_DIR_SIG: &[u8; 4] = b"PK\x05\x06";
+const END_OF_CENTRAL_DIR_64_SIG: &[u8; 4] = b"PK\x06\x06";
+const END_OF_CENTRAL_DIR_LOCATOR_SIG: &[u8; 4] = b"PK\x06\x07";
 const DATA_INDICATOR_SIG: &[u8; 4] = b"PK\x07\x08";
 
 #[derive(Default)]
@@ -16,9 +18,9 @@ pub struct Opts {
 
 #[derive(Debug)]
 struct EndOfCentralDirRecord {
-    disk_nr: u16,
-    size_cd: u32,
-    offset_cd: u32,
+    disk_nr: u32,
+    size_cd: u64,
+    offset_cd: u64,
 }
 
 impl EndOfCentralDirRecord {
@@ -29,21 +31,78 @@ impl EndOfCentralDirRecord {
     }
 }
 
-fn decode_eocd(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralDirRecord> {
-    o.add("signature", precise(b, END_OF_CENTRAL_DIR_SIG, opts.force))?;
-    let disk_nr = o.add("disk_nr", u16_le(b))?;
-    o.add("start_disk_nr", u16_le(b))?;
-    o.add("nr_of_central_dir_records_on_disk", u16_le(b))?;
-    o.add("nr_of_central_dir_records", u16_le(b))?;
-    let size_cd = o.add("size_of_central_dir", u32_le(b))?;
-    let offset_cd = o.add("offset_of_start_of_central_dir", u32_le(b))?;
-    let comment_length = o.add("comment_length", u16_le(b))?;
-    o.add("comment", raw(b, comment_length.into()))?;
+fn decode_eocd_common(o: &mut Obj, b: &mut Bytes, zip64: bool) -> Result<EndOfCentralDirRecord> {
+    let u16_as_u32 = |b: &mut Bytes| u16_le(b).map(|(m, v, u)| (m, v, u.into()));
+    let u32_as_u64 = |b: &mut Bytes| u32_le(b).map(|(m, v, u)| (m, v, u.into()));
+    let small = if zip64 { u32_le } else { u16_as_u32 };
+    let large = if zip64 { u64_le } else { u32_as_u64 };
+
+    let disk_nr = o.add("disk_nr", small(b))?;
+    o.add("start_disk_nr", small(b))?;
+    o.add("nr_of_central_dir_records_on_disk", small(b))?;
+    o.add("nr_of_central_dir_records", small(b))?;
+    let size_cd = o.add("size_of_central_dir", large(b))?;
+    let offset_cd = o.add("offset_of_start_of_central_dir", large(b))?;
     Ok(EndOfCentralDirRecord {
         disk_nr,
         size_cd,
         offset_cd,
     })
+}
+
+fn decode_eocd(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralDirRecord> {
+    o.add("signature", precise(b, END_OF_CENTRAL_DIR_SIG, opts.force))?;
+    let eocdr = decode_eocd_common(o, b, false)?;
+    let comment_length = o.add("comment_length", u16_le(b))?;
+    o.add("comment", raw(b, comment_length.into()))?;
+    Ok(eocdr)
+}
+
+fn decode_extensible_data(o: &mut Obj, b: &mut Bytes) -> Result {
+    o.add("tag", u16_le(b))?;
+    let data_size = o.add("size", u16_le(b))?;
+    o.add("data", raw(b, data_size.into()))?;
+    Ok(())
+}
+
+fn decode_eocd64(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralDirRecord> {
+    o.add(
+        "signature",
+        precise(b, END_OF_CENTRAL_DIR_64_SIG, opts.force),
+    )?;
+    let size_eocd = o.add("size_of_end_of_central_directory", u64_le(b))?;
+    o.add("version_made_by", u16_le(b))?;
+    o.add("version_needed", u16_le(b))?;
+    let eocdr = decode_eocd_common(o, b, true)?;
+
+    // number of bytes read by this function so far
+    const FIXED_FIELD_SIZE: u64 = 44;
+    let rest = size_eocd.checked_sub(FIXED_FIELD_SIZE);
+    let mut b = take(b, rest.and_then(|l| l.try_into().ok()).unwrap())?;
+    o.add_mut("extensible_data", Meta::from(&b), |_, ed| {
+        let ed = ed.make_arr();
+        while !b.is_empty() {
+            ed.add_mut(Meta::from(&b), |edr_slice, edr| {
+                consume(&mut b, edr_slice, |b| {
+                    decode_extensible_data(edr.make_obj(), b)
+                })
+            })?;
+        }
+        Ok(())
+    })?;
+
+    Ok(eocdr)
+}
+
+fn decode_eocdl(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<u64> {
+    o.add(
+        "signature",
+        precise(b, END_OF_CENTRAL_DIR_LOCATOR_SIG, opts.force),
+    )?;
+    o.add("disk_nr", u32_le(b))?;
+    let offset_cdr = o.add("offset_of_end_of_central_dir_record", u64_le(b))?;
+    o.add("total_disk_nr", u32_le(b))?;
+    Ok(offset_cdr)
 }
 
 #[derive(Debug)]
@@ -415,10 +474,28 @@ pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result<()> {
     let eocds_abs = find(&b, END_OF_CENTRAL_DIR_SIG).unwrap();
     let mut eocd_slice = b.split_off(eocds_abs);
     let eocd_meta = Meta::from(&eocd_slice);
-    let eocd = root.add_mut("end_of_central_dir_record", eocd_meta, |_, eocd| {
-        decode_eocd(eocd.make_obj(), &mut eocd_slice.clone(), &opts)
+    let mut eocd = root.add_mut("end_of_central_dir_record", eocd_meta, |_, eocd| {
         decode_eocd(eocd.make_obj(), &mut eocd_slice, &opts)
     })?;
+
+    if let Some(eocdl_abs) = find(&b, END_OF_CENTRAL_DIR_LOCATOR_SIG) {
+        let mut eocdl_slice = b.split_off(eocdl_abs);
+        let eocdl_meta = Meta::from(&eocdl_slice);
+        let offset_eocd = root.add_mut(
+            "end_of_central_directory_locator",
+            eocdl_meta,
+            |_, eocdl| decode_eocdl(eocdl.make_obj(), &mut eocdl_slice, opts),
+        )?;
+        let offset_eocd: usize = offset_eocd.try_into().unwrap();
+
+        let mut eocd_slice = try_slice(&b, offset_eocd..)?;
+        let eocd_meta = Meta::from(&eocd_slice);
+        eocd = root.add_mut(
+            "end_of_central_directory_record_zip64",
+            eocd_meta,
+            |_, eocd| decode_eocd64(eocd.make_obj(), &mut eocd_slice, opts),
+        )?;
+    }
 
     let mut cd_slice = try_slice(&b, eocd.cd_range())?;
     let cd = root.add_mut("central_directories", Meta::from(&cd_slice), |_, cd| {
@@ -438,7 +515,11 @@ pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result<()> {
     let lf_slice = try_slice(&b, ..eocd.cd_range().start)?;
     root.add_mut("local_files", Meta::from(&lf_slice), |_, lf| {
         let a = lf.make_arr();
-        for cdr in cd.iter().filter(|cdr| cdr.disk_nr_start == eocd.disk_nr) {
+        // TODO! as u16
+        for cdr in cd
+            .iter()
+            .filter(|cdr| cdr.disk_nr_start as u32 == eocd.disk_nr)
+        {
             let offset: usize = cdr.local_file_offset.try_into().unwrap();
             let lfr_slice = lf_slice.slice(offset..);
             a.add_mut(Meta::from(&lfr_slice), |lfr_meta, lfr| {
