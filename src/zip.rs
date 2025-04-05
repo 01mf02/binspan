@@ -406,15 +406,14 @@ fn decode_local_file(o: &mut Obj, b: &mut Bytes, opts: &Opts, cdr_common: &Commo
     Ok(())
 }
 
-fn find_eocds(b: &[u8]) -> Option<usize> {
-    let is_eocds = |w| w == END_OF_CENTRAL_DIR_SIG;
+fn find(b: &[u8], sig: &[u8; 4]) -> Option<usize> {
+    let is_eocds = |w| w == sig;
     Some(b.len() - (b.windows(4).rev().take(128).position(is_eocds)? + 4))
 }
 
-// TODO: slice() may panic!
-pub fn decode_zip(root: &mut Obj, b: Bytes, opts: &Opts) -> Result<()> {
-    let eocds_abs = find_eocds(&b).unwrap();
-    let eocd_slice = try_slice(&b, eocds_abs..)?;
+pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result<()> {
+    let eocds_abs = find(&b, END_OF_CENTRAL_DIR_SIG).unwrap();
+    let mut eocd_slice = b.split_off(eocds_abs);
     let eocd_meta = Meta::from(&eocd_slice);
     let eocd = root.add_mut("end_of_central_dir_record", eocd_meta, |_, eocd| {
         decode_eocd(eocd.make_obj(), &mut eocd_slice.clone(), &opts)
