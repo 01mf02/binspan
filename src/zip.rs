@@ -352,7 +352,7 @@ fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
 #[derive(Debug)]
 struct CentralDirRecord {
     common: Common,
-    disk_nr_start: u16,
+    disk_nr_start: u32,
     local_file_offset: u64,
 }
 
@@ -381,7 +381,7 @@ fn decode_cdr(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<CentralDirRecor
 
     Ok(CentralDirRecord {
         common,
-        disk_nr_start,
+        disk_nr_start: zip64.disk_nr_start.unwrap_or(disk_nr_start.into()),
         local_file_offset: zip64.local_file_offset.unwrap_or(local_file_offset.into()),
     })
 }
@@ -516,10 +516,7 @@ pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result<()> {
     root.add_mut("local_files", Meta::from(&lf_slice), |_, lf| {
         let a = lf.make_arr();
         // TODO! as u16
-        for cdr in cd
-            .iter()
-            .filter(|cdr| cdr.disk_nr_start as u32 == eocd.disk_nr)
-        {
+        for cdr in cd.iter().filter(|cdr| cdr.disk_nr_start == eocd.disk_nr) {
             let offset: usize = cdr.local_file_offset.try_into().unwrap();
             let lfr_slice = lf_slice.slice(offset..);
             a.add_mut(Meta::from(&lfr_slice), |lfr_meta, lfr| {
