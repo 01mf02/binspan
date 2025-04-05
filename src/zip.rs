@@ -517,9 +517,9 @@ pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result<()> {
         let a = lf.make_arr();
         for cdr in cd.iter().filter(|cdr| cdr.disk_nr_start == eocd.disk_nr) {
             let offset: usize = cdr.local_file_offset.try_into().unwrap();
-            let lfr_slice = lf_slice.slice(offset..);
+            let mut lfr_slice = lf_slice.slice(offset..);
             a.add_mut(Meta::from(&lfr_slice), |lfr_meta, lfr| {
-                consume(&mut lfr_slice.clone(), lfr_meta, |b| {
+                consume(&mut lfr_slice, lfr_meta, |b| {
                     decode_local_file(lfr.make_obj(), b, &opts, &cdr.common)
                 })
             })?;
