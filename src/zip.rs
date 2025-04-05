@@ -31,6 +31,7 @@ impl EndOfCentralDirRecord {
     }
 }
 
+// Maximal size for ZIP-32: 4*16+2*32 bits = 128 bits
 fn decode_eocd_common(o: &mut Obj, b: &mut Bytes, zip64: bool) -> Result<EndOfCentralDirRecord> {
     let u16_as_u32 = |b: &mut Bytes| u16_le(b).map(|(m, v, u)| (m, v, u.into()));
     let u32_as_u64 = |b: &mut Bytes| u32_le(b).map(|(m, v, u)| (m, v, u.into()));
@@ -50,6 +51,7 @@ fn decode_eocd_common(o: &mut Obj, b: &mut Bytes, zip64: bool) -> Result<EndOfCe
     })
 }
 
+// Maximal size: 32+128+16+(2^16 * 8) bits = 524464 bits = 65558 bytes
 fn decode_eocd(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralDirRecord> {
     o.add("signature", precise(b, END_OF_CENTRAL_DIR_SIG, opts.force))?;
     let eocdr = decode_eocd_common(o, b, false)?;
@@ -94,6 +96,7 @@ fn decode_eocd64(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentral
     Ok(eocdr)
 }
 
+// Total size: 32+32+64+32 bits = 160 bits = 20 bytes
 fn decode_eocdl(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<u64> {
     o.add(
         "signature",
@@ -465,20 +468,19 @@ fn decode_local_file(o: &mut Obj, b: &mut Bytes, opts: &Opts, cdr_common: &Commo
     Ok(())
 }
 
-fn find(b: &[u8], sig: &[u8; 4]) -> Option<usize> {
-    let is_eocds = |w| w == sig;
-    Some(b.len() - (b.windows(4).rev().take(128).position(is_eocds)? + 4))
+fn find(b: &[u8], sig: &[u8; 4], len: usize) -> Option<usize> {
+    Some(b.len() - (b.windows(4).rev().take(len - 3).position(|w| w == sig)? + 4))
 }
 
 fn decode_eocds(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralDirRecord> {
-    let eocds_abs = find(&b, END_OF_CENTRAL_DIR_SIG).unwrap();
+    let eocds_abs = find(&b, END_OF_CENTRAL_DIR_SIG, 65558).unwrap();
     let mut eocd_slice = b.split_off(eocds_abs);
     let eocd_meta = Meta::from(&eocd_slice);
     let eocd = o.add_mut("end_of_central_dir_record", eocd_meta, |_, eocd| {
         decode_eocd(eocd.make_obj(), &mut eocd_slice, &opts)
     })?;
 
-    if let Some(eocdl_abs) = find(&b, END_OF_CENTRAL_DIR_LOCATOR_SIG) {
+    if let Some(eocdl_abs) = find(&b, END_OF_CENTRAL_DIR_LOCATOR_SIG, 20) {
         let mut eocdl_slice = b.split_off(eocdl_abs);
         let eocdl_meta = Meta::from(&eocdl_slice);
         let offset_eocd = o.add_mut(
