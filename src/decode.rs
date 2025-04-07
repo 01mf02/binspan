@@ -223,7 +223,7 @@ pub fn consume<T>(
     f: impl FnOnce(&mut Bytes) -> Result<T>,
 ) -> Result<T> {
     let (consumed, y) = consumed(b, f)?;
-    *to = Meta::from(consumed);
+    to.bytes = consumed;
     Ok(y)
 }
 
