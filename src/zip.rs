@@ -405,31 +405,25 @@ fn find(b: &[u8], sig: &[u8; 4], len: usize) -> Option<usize> {
     Some(b.len() - (b.windows(4).rev().take(len - 3).position(|w| w == sig)? + 4))
 }
 
+fn add_with<T, F>(o: &mut Obj, k: &'static str, mut b: Bytes, opts: &Opts, f: F) -> Result<T>
+where
+    F: FnOnce(&mut Obj, &mut Bytes, &Opts) -> Result<T>,
+{
+    o.add_mut(k, Meta::from(&b), |_, v| f(v.make_obj(), &mut b, &opts))
+}
+
 fn decode_eocds(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralDirRecord> {
     let eocds_abs = find(&b, END_OF_CENTRAL_DIR_SIG, 65558).unwrap();
-    let mut eocd_slice = b.split_off(eocds_abs);
-    let eocd_meta = Meta::from(&eocd_slice);
-    let eocd = o.add_mut("end_of_central_dir_record", eocd_meta, |_, eocd| {
-        decode_eocd(eocd.make_obj(), &mut eocd_slice, &opts)
-    })?;
+    let k = "end_of_central_directory_record";
+    let eocd = add_with(o, k, b.split_off(eocds_abs), opts, decode_eocd)?;
 
     if let Some(eocdl_abs) = find(&b, END_OF_CENTRAL_DIR_LOCATOR_SIG, 20) {
-        let mut eocdl_slice = b.split_off(eocdl_abs);
-        let eocdl_meta = Meta::from(&eocdl_slice);
-        let offset_eocd = o.add_mut(
-            "end_of_central_directory_locator",
-            eocdl_meta,
-            |_, eocdl| decode_eocdl(eocdl.make_obj(), &mut eocdl_slice, opts),
-        )?;
+        let k = "end_of_central_directory_locator";
+        let offset_eocd = add_with(o, k, b.split_off(eocdl_abs), opts, decode_eocdl)?;
         let offset_eocd: usize = offset_eocd.try_into().unwrap();
 
-        let mut eocd_slice = try_slice(&b, offset_eocd..)?;
-        let eocd_meta = Meta::from(&eocd_slice);
-        o.add_mut(
-            "end_of_central_directory_record_zip64",
-            eocd_meta,
-            |_, eocd| decode_eocd64(eocd.make_obj(), &mut eocd_slice, opts),
-        )
+        let k = "end_of_central_directory_record_zip64";
+        add_with(o, k, try_split_off(b, offset_eocd)?, opts, decode_eocd64)
     } else {
         Ok(eocd)
     }
