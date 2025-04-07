@@ -23,14 +23,6 @@ struct EndOfCentralDirRecord {
     offset_cd: u64,
 }
 
-impl EndOfCentralDirRecord {
-    fn cd_range(&self) -> core::ops::Range<usize> {
-        let cd_start: usize = self.offset_cd.try_into().unwrap();
-        let cd_len: usize = self.size_cd.try_into().unwrap();
-        cd_start..cd_start + cd_len
-    }
-}
-
 // Maximal size for ZIP-32: 4*16+2*32 bits = 128 bits
 fn decode_eocd_common(o: &mut Obj, b: &mut Bytes, zip64: bool) -> Result<EndOfCentralDirRecord> {
     let u16_as_u32 = |b: &mut Bytes| u16_le(b).map(|(m, v, u)| (m, v, u.into()));
@@ -443,30 +435,30 @@ fn decode_eocds(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralD
     }
 }
 
-pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result<()> {
+fn decode_cds(a: &mut Arr, mut b: Bytes, opts: &Opts) -> Result<Vec<CentralDirRecord>> {
+    let mut cds = Vec::new();
+    while !b.is_empty() {
+        cds.push(a.add_mut(Meta::from(&b), |cdr_slice, cdr| {
+            consume(&mut b, cdr_slice, |b| decode_cdr(cdr.make_obj(), b, &opts))
+        })?);
+    }
+    Ok(cds)
+}
+
+pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result {
     let eocd = decode_eocds(root, &mut b, opts)?;
 
-    let mut cd_slice = try_slice(&b, eocd.cd_range())?;
+    let mut cd_slice = try_split_off(&mut b, eocd.offset_cd.try_into().unwrap())?;
+    try_split_off(&mut cd_slice, eocd.size_cd.try_into().unwrap())?;
     let cd = root.add_mut("central_directories", Meta::from(&cd_slice), |_, cd| {
-        let cd = cd.make_arr();
-        let mut cds = Vec::new();
-        while !cd_slice.is_empty() {
-            let cdr = cd.add_mut(Meta::from(&cd_slice), |cdr_slice, cdr| {
-                consume(&mut cd_slice, cdr_slice, |b| {
-                    decode_cdr(cdr.make_obj(), b, &opts)
-                })
-            })?;
-            cds.push(cdr);
-        }
-        Ok(cds)
+        decode_cds(cd.make_arr(), cd_slice, opts)
     })?;
 
-    let lf_slice = try_slice(&b, ..eocd.cd_range().start)?;
-    root.add_mut("local_files", Meta::from(&lf_slice), |_, lf| {
+    root.add_mut("local_files", Meta::from(&b), |_, lf| {
         let a = lf.make_arr();
         for cdr in cd.iter().filter(|cdr| cdr.disk_nr_start == eocd.disk_nr) {
             let offset: usize = cdr.local_file_offset.try_into().unwrap();
-            let mut lfr_slice = lf_slice.slice(offset..);
+            let mut lfr_slice = try_slice(&b, offset..)?;
             a.add_mut(Meta::from(&lfr_slice), |lfr_meta, lfr| {
                 consume(&mut lfr_slice, lfr_meta, |b| {
                     decode_local_file(lfr.make_obj(), b, &opts, &cdr.common)
@@ -474,7 +466,5 @@ pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result<()> {
             })?;
         }
         Ok(())
-    })?;
-
-    Ok(())
+    })
 }
