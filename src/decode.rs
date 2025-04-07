@@ -171,13 +171,16 @@ impl Arr {
     }
 }
 
-pub fn take(b: &mut Bytes, n: usize) -> Result<Bytes> {
-    if n > b.len() {
-        Err(Error::new(b.clone(), n))
+pub fn take(left: &mut Bytes, n: usize) -> Result<Bytes> {
+    let right = try_split_off(left, n)?;
+    Ok(core::mem::replace(left, right))
+}
+
+pub fn try_split_off(b: &mut Bytes, at: usize) -> Result<Bytes> {
+    if at > b.len() {
+        Err(Error::new(b.clone(), at))
     } else {
-        let b_ = b.slice(..n);
-        *b = b.slice(n..);
-        Ok(b_)
+        Ok(b.split_off(at))
     }
 }
 
