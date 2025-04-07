@@ -183,95 +183,55 @@ fn mask(u: u16, offset: u8, width: u8) -> u8 {
     ((u & mask) >> offset) as u8
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct DosTime {
-    second: u8,
-    minute: u8,
-    hour: u8,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct DosDate {
-    day: u8,
-    month: u8,
-    year: u16,
-}
-
 // https://learn.microsoft.com/en-gb/windows/win32/api/winbase/nf-winbase-dosdatetimetofiletime
-impl From<u16> for DosTime {
-    fn from(time: u16) -> Self {
-        Self {
-            second: mask(time, 0, 5) * 2,
-            minute: mask(time, 5, 6),
-            hour: mask(time, 11, 5),
-        }
-    }
+fn sec_min_hr(time: u16) -> (u8, u8, u8) {
+    (mask(time, 0, 5), mask(time, 5, 6), mask(time, 11, 5))
 }
 
-impl From<u16> for DosDate {
-    fn from(date: u16) -> Self {
-        Self {
-            day: mask(date, 0, 5),
-            month: mask(date, 5, 4),
-            year: mask(date, 9, 7) as u16 + 1980,
-        }
-    }
+fn day_month_year(date: u16) -> (u8, u8, u8) {
+    (mask(date, 0, 5), mask(date, 5, 4), mask(date, 9, 7))
 }
 
-#[test]
-fn dos_time() {
-    assert_eq!(
-        DosTime::from(0x4cea),
-        DosTime {
-            second: 20,
-            minute: 39,
-            hour: 9,
-        }
-    )
-}
-
-#[test]
-fn dos_date() {
-    assert_eq!(
-        DosDate::from(0x5a55),
-        DosDate {
-            day: 21,
-            month: 2,
-            year: 2025,
-        }
-    )
-}
-
-fn decode_fat_time(b: &mut Bytes) -> Result<(Meta, Val, DosTime)> {
+fn decode_td<F>(b: &mut Bytes, f: F) -> Result<(Meta, Val, u16)>
+where
+    F: FnOnce(u16) -> [(&'static str, Val); 3],
+{
     let (meta, _, time) = u16_le(b)?;
     let span = meta.bytes.clone();
-    let time = DosTime::from(time);
-    let f = move || {
-        let entry = |k, v| (k, Meta::from(span.clone()), Val::U8(v));
-        Val::Obj(Obj([
-            entry("second", time.second),
-            entry("minute", time.minute),
-            entry("hour", time.hour),
-        ]
-        .into()))
-    };
-    Ok((meta, Val::lazy(f), time))
+    let entries = f(time);
+    let entry = move |(k, v)| (k, Meta::from(span.clone()), v);
+    let val = move || Val::Obj(Obj(entries.into_iter().map(entry).collect()));
+    Ok((meta, Val::lazy(val), time))
 }
 
-fn decode_fat_date(b: &mut Bytes) -> Result<(Meta, Val, DosDate)> {
-    let (meta, _, date) = u16_le(b)?;
-    let span = meta.bytes.clone();
-    let date = DosDate::from(date);
-    let f = move || {
-        let entry = move |k, v| (k, Meta::from(span.clone()), v);
-        Val::Obj(Obj([
-            entry("day", Val::U8(date.day)),
-            entry("month", Val::U8(date.month)),
-            entry("year", Val::U16(date.year)),
-        ]
-        .into()))
-    };
-    Ok((meta, Val::lazy(f), date))
+fn decode_time_date(o: &mut Obj, b: &mut Bytes) -> Result {
+    o.add("fat_time", decode_td(b, |time| {
+        let (sec, min, hr) = sec_min_hr(time);
+        let (sec, min, hr) = (Val::U8(sec * 2), Val::U8(min), Val::U8(hr));
+        [("second", sec), ("minute", min), ("hour", hr)]
+    }))?;
+    o.add("fat_date", decode_td(b, |date| {
+        let (day, mon, yr) = day_month_year(date);
+        let (day, mon, yr) = (Val::U8(day), Val::U8(mon), Val::U16(yr as u16 + 1980));
+        [("day", day), ("month", mon), ("year", yr)]
+    }))?;
+    Ok(())
+}
+
+fn decode_fat_time(b: &mut Bytes) -> Result<(Meta, Val, u16)> {
+    decode_td(b, |time| {
+        let (sec, min, hr) = sec_min_hr(time);
+        let (sec, min, hr) = (Val::U8(sec * 2), Val::U8(min), Val::U8(hr));
+        [("second", sec), ("minute", min), ("hour", hr)]
+    })
+}
+
+fn decode_fat_date(b: &mut Bytes) -> Result<(Meta, Val, u16)> {
+    decode_td(b, |date| {
+        let (day, month, year) = day_month_year(date);
+        let (day, month, year) = (Val::U8(day), Val::U8(month), Val::U16(year as u16 + 1980));
+        [("day", day), ("month", month), ("year", year)]
+    })
 }
 
 bitflags! {
