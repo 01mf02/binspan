@@ -205,33 +205,19 @@ where
 }
 
 fn decode_time_date(o: &mut Obj, b: &mut Bytes) -> Result {
-    o.add("fat_time", decode_td(b, |time| {
+    let time = decode_td(b, |time| {
         let (sec, min, hr) = sec_min_hr(time);
         let (sec, min, hr) = (Val::U8(sec * 2), Val::U8(min), Val::U8(hr));
         [("second", sec), ("minute", min), ("hour", hr)]
-    }))?;
-    o.add("fat_date", decode_td(b, |date| {
+    });
+    let date = decode_td(b, |date| {
         let (day, mon, yr) = day_month_year(date);
         let (day, mon, yr) = (Val::U8(day), Val::U8(mon), Val::U16(yr as u16 + 1980));
         [("day", day), ("month", mon), ("year", yr)]
-    }))?;
+    });
+    o.add("fat_time", time)?;
+    o.add("fat_date", date)?;
     Ok(())
-}
-
-fn decode_fat_time(b: &mut Bytes) -> Result<(Meta, Val, u16)> {
-    decode_td(b, |time| {
-        let (sec, min, hr) = sec_min_hr(time);
-        let (sec, min, hr) = (Val::U8(sec * 2), Val::U8(min), Val::U8(hr));
-        [("second", sec), ("minute", min), ("hour", hr)]
-    })
-}
-
-fn decode_fat_date(b: &mut Bytes) -> Result<(Meta, Val, u16)> {
-    decode_td(b, |date| {
-        let (day, month, year) = day_month_year(date);
-        let (day, month, year) = (Val::U8(day), Val::U8(month), Val::U16(year as u16 + 1980));
-        [("day", day), ("month", month), ("year", year)]
-    })
 }
 
 bitflags! {
@@ -291,12 +277,7 @@ fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
     let flags = o.add("flags", Ok(lazy_flags!(u16_le(b)?, Flags)))?;
     let compression_method = o.add("compression_method", u16_le(b))?;
     o.add_mut("last_modification", Meta::from(&*b), |lm_meta, lm| {
-        consume(b, lm_meta, |b| {
-            let lm = lm.make_obj();
-            lm.add("fat_time", decode_fat_time(b))?;
-            lm.add("fat_date", decode_fat_date(b))?;
-            Ok(())
-        })
+        consume(b, lm_meta, |b| decode_time_date(lm.make_obj(), b))
     })?;
     o.add("crc_32", u32_le(b))?;
     let compressed_size = o.add("compressed_size", u32_le(b))?;
