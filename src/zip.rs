@@ -274,14 +274,12 @@ fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
     o.add("crc_32", u32_le(b))?;
     let compressed_size = o.add("compressed_size", u32_le(b))?;
     o.add("uncompressed_size", u32_le(b))?;
-    let filename_len = o.add("file_name_length", u16_le(b))?;
-    let extra_field_len = o.add("extra_field_length", u16_le(b))?;
     Ok(Common {
         flags,
         compression_method,
         compressed_size,
-        filename_len,
-        extra_field_len,
+        filename_len: o.add("file_name_length", u16_le(b))?,
+        extra_field_len: o.add("extra_field_length", u16_le(b))?,
     })
 }
 
