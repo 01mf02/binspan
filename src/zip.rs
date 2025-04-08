@@ -196,7 +196,7 @@ where
     Ok((meta, Val::lazy(val), time))
 }
 
-fn decode_time_date(o: &mut Obj, b: &mut Bytes) -> Result {
+fn decode_time_date(o: &mut Obj, b: &mut Bytes) -> Result<(u16, u16)> {
     let time = decode_td(b, |time| {
         let (sec, min, hr) = sec_min_hr(time);
         let (sec, min, hr) = (Val::U8(sec * 2), Val::U8(min), Val::U8(hr));
@@ -207,9 +207,7 @@ fn decode_time_date(o: &mut Obj, b: &mut Bytes) -> Result {
         let (day, mon, yr) = (Val::U8(day), Val::U8(mon), Val::U16(yr as u16 + 1980));
         [("day", day), ("month", mon), ("year", yr)]
     });
-    o.add("fat_time", time)?;
-    o.add("fat_date", date)?;
-    Ok(())
+    Ok((o.add("fat_time", time)?, o.add("fat_date", date)?))
 }
 
 bitflags! {
