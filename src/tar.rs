@@ -1,116 +1,87 @@
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::rc::Rc;
+use crate::decode::*;
+use bytes::Bytes;
 
-pub type U8<'a> = (&'a str, u8);
-pub type U16<'a> = (&'a str, u16);
-pub type U32<'a> = (&'a str, u32);
-pub type U64<'a> = (&'a str, u64);
-
-#[derive(Debug)]
-pub enum JsonVal<'a> {
-    Str(String),
-    Arr(Vec<Self>),
-    Obj(HashMap<String, Self>),
-    Int(isize),
-    Src(Rc<SrcVal<'a>>),
+fn trim(s: &str) -> &str {
+    s.trim_matches(' ')
 }
 
-impl<'a> JsonVal<'a> {
-    fn expand(&self) -> Self {
-        match self {
-            Self::Src(s) => Self::from(&**s),
-            _ => todo!(),
+/// Convert a potentially NUL-terminated string to UTF-8.
+fn utf8(s: &[u8]) -> &str {
+    core::str::from_utf8(s.iter().position(|c| *c == b'\0').map_or(s, |i| &s[..i])).unwrap()
+}
+
+fn decode_ustar(o: &mut Obj, b: &mut Bytes) -> Result {
+    o.add("magic", raw(b, 6))?;
+    o.add("version", take_oct8(b))?;
+    o.add("uname", take_str(b, 32))?;
+    o.add("gname", take_str(b, 32))?;
+    o.add("devmajor", take_oct32(b))?;
+    o.add("devminor", take_oct32(b))?;
+    o.add("prefix", take_str(b, 155))?;
+    Ok(())
+}
+
+const BLOCK_BYTES: usize = 512;
+const END_MARKER: [u8; BLOCK_BYTES * 2] = [0; BLOCK_BYTES * 2];
+
+fn take_str(b: &mut Bytes, n: usize) -> Result<Decoded<String>> {
+    let b = take(b, n)?;
+    let s = utf8(&b);
+    Ok((Meta::from(&b), Val::Str(s.into()), s.into()))
+}
+
+macro_rules! take_oct_str {
+    ($name: ident, $ty: ident, $f: expr, $width: expr) => {
+        fn $name(b: &mut Bytes) -> Result<Decoded<$ty>> {
+            let b = take(b, $width)?;
+            let s = utf8(&b);
+            let u = $ty::from_str_radix(trim(s), 8).unwrap();
+            Ok((Meta::from(b), $f(u), u))
         }
+    };
+}
+take_oct_str!(take_oct8, u8, Val::U8, 2);
+take_oct_str!(take_oct32, u32, Val::U32, 8);
+take_oct_str!(take_oct64, u64, Val::U64, 12);
+
+fn decode_file<'a>(o: &mut Obj, b: &mut Bytes) -> Result {
+    let init = b.clone();
+    let offset = |b: &[u8]| b.as_ptr() as usize - init.as_ptr() as usize;
+    let padding = |b: &[u8]| BLOCK_BYTES - (offset(b) % BLOCK_BYTES);
+
+    o.add("name", take_str(b, 100))?;
+    o.add("mode", take_oct32(b))?;
+    o.add("uid", take_oct32(b))?;
+    o.add("gid", take_oct32(b))?;
+    let size = o.add("size", take_oct64(b))?;
+    o.add("mtime", take_oct64(b))?;
+    o.add("chksum", take_oct32(b))?;
+    o.add("typeflag", take_str(b, 1))?;
+    o.add("linkname", take_str(b, 100))?;
+    if b.starts_with(b"ustar\0") {
+        o.add_mut("ustar", Meta::from(&*b), |m, v| {
+            consume(b, m, |b| decode_ustar(v.make_obj(), b))
+        })?;
     }
+    o.add("header_block_padding", raw(b, padding(b)))?;
+    let size: usize = size.try_into().unwrap();
+    o.add("data", raw(b, size))?;
+    o.add("data_block_padding", raw(b, padding(b)))?;
+    Ok(())
 }
 
-impl<'a> From<&SrcVal<'a>> for JsonVal<'a> {
-    fn from(v: &SrcVal<'a>) -> Self {
-        match v {
-            SrcVal::Dyn(v) => {
-                let (src, v) = v.as_src_val();
-                let v = SrcVal::Val(src, v);
-                Self::from(&v)
+pub fn decode_tar(o: &mut Obj, mut b: Bytes) -> Result {
+    o.add_mut("files", Meta::from(&b), |m, a| {
+        let a = a.make_arr();
+        consume(&mut b, m, |b| {
+            while !b.starts_with(&END_MARKER) && !b.is_empty() {
+                a.add_mut(Meta::from(&*b), |m, o| {
+                    consume(b, m, |b| decode_file(o.make_obj(), b))
+                })?;
             }
-            SrcVal::Val(src, v) => match v {
-                Val::Raw => JsonVal::Str(match src {
-                    Src::Str(s) => s.to_string(),
-                    Src::Bytes(b) => b.iter().copied().map(char::from).collect(),
-                }),
-                Val::Arr(a) => JsonVal::Arr(a.iter().map(Self::from).collect()),
-                Val::Obj(o) => JsonVal::Obj(
-                    o.iter()
-                        .map(|(k, v)| ((*k).into(), Self::from(v)))
-                        .collect(),
-                ),
-                Val::Int(i) => JsonVal::Int(*i),
-            },
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum SrcVal<'a> {
-    Dyn(&'a dyn AsVal<'a>),
-    Val(Src<'a>, Val<'a>),
-}
-
-#[derive(Debug)]
-pub enum Src<'a> {
-    Str(&'a str),
-    Bytes(&'a [u8]),
-}
-
-#[derive(Debug)]
-pub enum Val<'a> {
-    Arr(Vec<SrcVal<'a>>),
-    Obj(Vec<(&'static str, SrcVal<'a>)>),
-    Int(isize),
-    // either string or bytes, depending on the `Src` corresponding to the `Val`
-    Raw,
-}
-
-pub trait AsVal<'a>: Debug {
-    fn as_src_val(&self) -> (Src<'a>, Val<'a>);
-}
-
-pub fn take<'a>(d: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
-    if n > d.len() {
-        None
-    } else {
-        let d_ = &d[..n];
-        *d = &d[n..];
-        Some(d_)
-    }
-}
-
-#[macro_export]
-macro_rules! str_raw {
-    ($self: ident, $i: ident) => {
-        (stringify!($i), SrcVal::Val(Src::Str($self.$i), Val::Raw))
-    };
-}
-
-#[macro_export]
-macro_rules! bytes_raw {
-    ($self: ident, $i: ident) => {
-        (stringify!($i), SrcVal::Val(Src::Bytes($self.$i), Val::Raw))
-    };
-}
-
-#[macro_export]
-macro_rules! str_int {
-    ($self: ident, $i: ident) => {{
-        let int = Val::Int($self.$i.1.try_into().unwrap());
-        (stringify!($i), SrcVal::Val(Src::Str($self.$i.0), int))
-    }};
-}
-
-#[macro_export]
-macro_rules! bytes_int {
-    ($self: ident, $i: ident) => {{
-        let int = Val::Int($self.$i.1.try_into().unwrap());
-        (stringify!($i), SrcVal::Val(Src::Bytes($self.$i.0), int))
-    }};
+            Ok(())
+        })
+    })?;
+    // TODO: if !b.is_empty(), check presence of end marker
+    Ok(())
 }
