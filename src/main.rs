@@ -1,7 +1,6 @@
 #[macro_use]
 mod tar;
 mod decode;
-mod tar2;
 mod zip;
 
 fn main() -> std::io::Result<()> {
@@ -24,13 +23,16 @@ fn main() -> std::io::Result<()> {
     let mut args = std::env::args();
     args.next();
     let filename = args.next().expect("pass ZIP filename as argument");
-    let file = std::fs::File::open(filename)?;
+    let file = std::fs::File::open(filename.clone())?;
     let mmap = unsafe { memmap2::Mmap::map(&file) }?;
-
-    let opts = zip::Opts::default();
     let b = bytes::Bytes::from_owner(mmap);
     let mut o = decode::Obj::default();
-    let r = zip::decode_zip(&mut o, b, &opts);
+
+    let r = if filename.ends_with(".tar") {
+        tar::decode_tar(&mut o, b)
+    } else {
+        zip::decode_zip(&mut o, b, &zip::Opts::default())
+    };
     let o = decode::Val::Obj(o).eval();
     dbg!(o);
     dbg!(r.unwrap());
