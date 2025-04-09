@@ -409,6 +409,7 @@ where
 }
 
 fn decode_eocds(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralDirRecord> {
+    // TODO: is this an error? or return Option?
     let eocds_abs = find(&b, END_OF_CENTRAL_DIR_SIG, 65558).unwrap();
     let k = "end_of_central_directory_record";
     let eocd = add_with(o, k, b.split_off(eocds_abs), opts, decode_eocd)?;
