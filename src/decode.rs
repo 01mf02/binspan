@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use core::cell::LazyCell;
-use core::ops::{Bound, Range, RangeBounds};
+use core::ops::{Range, RangeBounds};
 use std::rc::Rc;
 
 pub type Result<T = (), E = Error> = core::result::Result<T, E>;
@@ -240,6 +240,7 @@ macro_rules! decode_int {
 }
 
 pub mod le {
+    use super::*;
     decode_int!(u8, Val::U8, 1);
     decode_int!(u16, Val::U16, 2);
     decode_int!(u32, Val::U32, 4);
