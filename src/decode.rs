@@ -47,6 +47,8 @@ impl Error {
     }
 }
 
+pub type Decoded<T> = (Meta, Val, T);
+
 /// Metadata of a value.
 ///
 /// This is precisely the information that gets lost when changing a value.
@@ -147,7 +149,7 @@ impl Obj {
         }
     }
 
-    pub fn add<T>(&mut self, field: &'static str, r: Result<(Meta, Val, T)>) -> Result<T> {
+    pub fn add<T>(&mut self, field: &'static str, r: Result<Decoded<T>>) -> Result<T> {
         let (m, v, y) = r.map_err(|e| e.with_index(Index::Str(field)))?;
         self.0.push((field, m, v));
         Ok(y)
@@ -229,8 +231,7 @@ pub fn consume<T>(
 
 macro_rules! decode_int {
     ($ty:ident, $val:expr, $width: expr) => {
-        use super::*;
-        pub fn $ty(b: &mut Bytes) -> Result<(Meta, Val, $ty)> {
+        pub fn $ty(b: &mut Bytes) -> Result<Decoded<$ty>> {
             let b = take(b, $width).map_err(|e| e.with_typ(Expect::Int))?;
             let u = $ty::from_le_bytes((*b).try_into().unwrap());
             Ok((Meta::from(b), $val(u), u))
@@ -247,12 +248,12 @@ pub mod le {
 
 pub use le::{u16 as u16_le, u32 as u32_le, u64 as u64_le};
 
-pub fn raw(b: &mut Bytes, n: usize) -> Result<(Meta, Val, Bytes)> {
+pub fn raw(b: &mut Bytes, n: usize) -> Result<Decoded<Bytes>> {
     let b = take(b, n)?;
     Ok((Meta::from(&b), Val::default(), b))
 }
 
-pub fn precise(b: &mut Bytes, s: &'static [u8], force: bool) -> Result<(Meta, Val, ())> {
+pub fn precise(b: &mut Bytes, s: &'static [u8], force: bool) -> Result<Decoded<()>> {
     let err = move |e: Error| e.with_typ(Expect::Raw(s));
     let b = take(b, s.len()).map_err(err)?;
     if b == s || force {

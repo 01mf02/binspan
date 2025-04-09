@@ -184,7 +184,7 @@ fn day_month_year(date: u16) -> (u8, u8, u8) {
     (mask(date, 0, 5), mask(date, 5, 4), mask(date, 9, 7))
 }
 
-fn decode_td<F>(b: &mut Bytes, f: F) -> Result<(Meta, Val, u16)>
+fn decode_td<F>(b: &mut Bytes, f: F) -> Result<Decoded<u16>>
 where
     F: FnOnce(u16) -> [(&'static str, Val); 3],
 {
