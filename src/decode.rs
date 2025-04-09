@@ -83,6 +83,7 @@ pub enum Val {
     U32(u32),
     U64(u64),
     Raw { gap: bool },
+    Str(String),
     Arr(Arr),
     Obj(Obj),
     Lazy(Rc<LazyCell<Val, Box<dyn FnOnce() -> Val>>>),
@@ -102,7 +103,7 @@ impl Val {
             Self::Lazy(l) => LazyCell::force(l).eval(),
             Self::Arr(Arr(a)) => Self::Arr(Arr(a.iter().map(fa).collect())),
             Self::Obj(Obj(o)) => Self::Obj(Obj(o.iter().map(fo).collect())),
-            Self::Raw { .. } | Self::Bool(_) => self.clone(),
+            Self::Raw { .. } | Self::Str(_) | Self::Bool(_) => self.clone(),
             Self::U8(_) | Self::U16(_) | Self::U32(_) | Self::U64(_) => self.clone(),
         }
     }
