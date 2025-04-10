@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use core::cell::LazyCell;
+use core::fmt;
 use core::ops::{Range, RangeBounds};
 use std::rc::Rc;
 
@@ -9,8 +10,7 @@ pub type Result<T = (), E = Error> = core::result::Result<T, E>;
 pub struct Error {
     position: Bytes,
     path: Vec<Index>,
-    expect_len: usize,
-    expect_typ: Expect,
+    msg: String,
 }
 
 #[derive(Clone, Debug)]
@@ -27,22 +27,16 @@ pub enum Expect {
 }
 
 impl Error {
-    fn new(position: Bytes, expect_len: usize) -> Self {
+    pub fn new(position: Bytes, msg: String) -> Self {
         Self {
             position,
             path: Vec::new(),
-            expect_len,
-            expect_typ: Expect::Bytes,
+            msg,
         }
     }
 
     fn with_index(mut self, i: Index) -> Self {
         self.path.push(i);
-        self
-    }
-
-    fn with_typ(mut self, e: Expect) -> Self {
-        self.expect_typ = e;
         self
     }
 }
@@ -197,7 +191,7 @@ pub fn take(left: &mut Bytes, n: usize) -> Result<Bytes> {
 
 pub fn try_split_off(b: &mut Bytes, at: usize) -> Result<Bytes> {
     if at > b.len() {
-        Err(Error::new(b.clone(), at))
+        Err(Error::new(b.clone(), format!("expected {at} bytes")))
     } else {
         Ok(b.split_off(at))
     }
@@ -226,7 +220,8 @@ fn to_range(bounds: impl RangeBounds<usize>, len: usize) -> Result<Range<usize>,
 
 // Panics if `range.start > range.end`!
 pub fn try_slice(b: &Bytes, range: impl RangeBounds<usize>) -> Result<Bytes> {
-    Ok(b.slice(to_range(range, b.len()).map_err(|n| Error::new(b.clone(), n))?))
+    let err = |n| Error::new(b.clone(), format!("expected {n} bytes"));
+    Ok(b.slice(to_range(range, b.len()).map_err(err)?))
 }
 
 fn consumed<T>(b: &mut Bytes, f: impl FnOnce(&mut Bytes) -> Result<T>) -> Result<(Bytes, T)> {
@@ -247,10 +242,12 @@ pub fn consume<T>(
 }
 
 macro_rules! decode_int {
-    ($ty:ident, $val:expr, $width: expr) => {
+    ($width: expr, $f:ident, $ty:ident, $val:expr) => {
         pub fn $ty(b: &mut Bytes) -> Result<Decoded<$ty>> {
-            let b = take(b, $width).map_err(|e| e.with_typ(Expect::Int))?;
-            let u = $ty::from_le_bytes((*b).try_into().unwrap());
+            let b = take(b, $width)?;
+            // SAFETY: if `take` returns `Ok(b)`, then `b.len() = $width`
+            let a: [u8; $width] = (*b).try_into().unwrap();
+            let u = $ty::$f(a);
             Ok((Meta::from(b), $val(u), u))
         }
     };
@@ -258,25 +255,24 @@ macro_rules! decode_int {
 
 pub mod le {
     use super::*;
-    decode_int!(u8, Val::U8, 1);
-    decode_int!(u16, Val::U16, 2);
-    decode_int!(u32, Val::U32, 4);
-    decode_int!(u64, Val::U64, 8);
+    decode_int!(1, from_le_bytes, u8, Val::U8);
+    decode_int!(2, from_le_bytes, u16, Val::U16);
+    decode_int!(4, from_le_bytes, u32, Val::U32);
+    decode_int!(8, from_le_bytes, u64, Val::U64);
 }
-
-pub use le::{u16 as u16_le, u32 as u32_le, u64 as u64_le};
 
 pub fn raw(b: &mut Bytes, n: usize) -> Result<Decoded<Bytes>> {
     let b = take(b, n)?;
     Ok((Meta::from(&b), Val::default(), b))
 }
 
-pub fn precise(b: &mut Bytes, s: &'static [u8], force: bool) -> Result<Decoded<()>> {
-    let err = move |e: Error| e.with_typ(Expect::Raw(s));
-    let b = take(b, s.len()).map_err(err)?;
+pub fn precise(b: &mut Bytes, s: &[u8], force: bool) -> Result<Decoded<()>> {
+    let byte_str = |b: &[u8]| b.iter().copied().map(char::from).collect::<String>();
+    let err = || format!("expected byte sequence {:?}", byte_str(s));
+    let b = take(b, s.len()).map_err(|e| Error { msg: err(), ..e })?;
     if b == s || force {
         Ok((Meta::from(b), Val::default(), ()))
     } else {
-        Err(err(Error::new(b, s.len())))
+        Err(Error::new(b, err()))
     }
 }
