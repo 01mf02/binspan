@@ -49,14 +49,14 @@ fn decode_eocd_common(o: &mut Obj, b: &mut Bytes, zip64: bool) -> Result<EndOfCe
 fn decode_eocd(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralDirRecord> {
     o.add("signature", precise(b, END_OF_CENTRAL_DIR_SIG, opts.force))?;
     let eocdr = decode_eocd_common(o, b, false)?;
-    let comment_length = o.add("comment_length", u16_le(b))?;
+    let comment_length = o.add("comment_length", le::u16(b))?;
     o.add("comment", raw(b, comment_length.into()))?;
     Ok(eocdr)
 }
 
 fn decode_extensible_data(o: &mut Obj, b: &mut Bytes) -> Result {
-    o.add("tag", u16_le(b))?;
-    let data_size = o.add("size", u16_le(b))?;
+    o.add("tag", le::u16(b))?;
+    let data_size = o.add("size", le::u16(b))?;
     o.add("data", raw(b, data_size.into()))?;
     Ok(())
 }
@@ -66,9 +66,9 @@ fn decode_eocd64(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentral
         "signature",
         precise(b, END_OF_CENTRAL_DIR_64_SIG, opts.force),
     )?;
-    let size_eocd = o.add("size_of_end_of_central_directory", u64_le(b))?;
-    o.add("version_made_by", u16_le(b))?;
-    o.add("version_needed", u16_le(b))?;
+    let size_eocd = o.add("size_of_end_of_central_directory", le::u64(b))?;
+    o.add("version_made_by", le::u16(b))?;
+    o.add("version_needed", le::u16(b))?;
     let eocdr = decode_eocd_common(o, b, true)?;
 
     // number of bytes read by this function so far
@@ -92,9 +92,9 @@ fn decode_eocdl(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<u64> {
         "signature",
         precise(b, END_OF_CENTRAL_DIR_LOCATOR_SIG, opts.force),
     )?;
-    o.add("disk_nr", u32_le(b))?;
-    let offset_cdr = o.add("offset_of_end_of_central_dir_record", u64_le(b))?;
-    o.add("total_disk_nr", u32_le(b))?;
+    o.add("disk_nr", le::u32(b))?;
+    let offset_cdr = o.add("offset_of_end_of_central_dir_record", le::u64(b))?;
+    o.add("total_disk_nr", le::u32(b))?;
     Ok(offset_cdr)
 }
 
@@ -186,7 +186,7 @@ fn decode_td<F>(b: &mut Bytes, f: F) -> Result<Decoded<u16>>
 where
     F: FnOnce(u16) -> [(&'static str, Val); 3],
 {
-    let (meta, _, time) = u16_le(b)?;
+    let (meta, _, time) = le::u16(b)?;
     let span = meta.bytes.clone();
     let entries = f(time);
     let entry = move |(k, v)| (k, Meta::from(span.clone()), v);
@@ -247,35 +247,35 @@ struct Zip64 {
 fn decode_zip64(o: &mut Obj, b: &mut Bytes) -> Result<Zip64> {
     let mut zip64 = Zip64::default();
     if !b.is_empty() {
-        zip64.uncompressed_size = Some(o.add("uncompressed_size", u64_le(b))?);
+        zip64.uncompressed_size = Some(o.add("uncompressed_size", le::u64(b))?);
     }
     if !b.is_empty() {
-        zip64.compressed_size = Some(o.add("compressed_size", u64_le(b))?);
+        zip64.compressed_size = Some(o.add("compressed_size", le::u64(b))?);
     }
     if !b.is_empty() {
-        zip64.local_file_offset = Some(o.add("local_file_offset", u64_le(b))?);
+        zip64.local_file_offset = Some(o.add("local_file_offset", le::u64(b))?);
     }
     if !b.is_empty() {
-        zip64.disk_nr_start = Some(o.add("disk_nr_start", u32_le(b))?);
+        zip64.disk_nr_start = Some(o.add("disk_nr_start", le::u32(b))?);
     }
     Ok(zip64)
 }
 
 fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
-    let flags = o.add("flags", Ok(lazy_flags!(u16_le(b)?, Flags)))?;
-    let compression_method = o.add("compression_method", u16_le(b))?;
+    let flags = o.add("flags", Ok(lazy_flags!(le::u16(b)?, Flags)))?;
+    let compression_method = o.add("compression_method", le::u16(b))?;
     o.add_consumed("last_modification", b, |b, v| {
         decode_time_date(v.make_obj(), b)
     })?;
-    o.add("crc_32", u32_le(b))?;
-    let compressed_size = o.add("compressed_size", u32_le(b))?;
-    o.add("uncompressed_size", u32_le(b))?;
+    o.add("crc_32", le::u32(b))?;
+    let compressed_size = o.add("compressed_size", le::u32(b))?;
+    o.add("uncompressed_size", le::u32(b))?;
     Ok(Common {
         flags,
         compression_method,
         compressed_size,
-        filename_len: o.add("file_name_length", u16_le(b))?,
-        extra_field_len: o.add("extra_field_length", u16_le(b))?,
+        filename_len: o.add("file_name_length", le::u16(b))?,
+        extra_field_len: o.add("extra_field_length", le::u16(b))?,
     })
 }
 
@@ -296,15 +296,15 @@ fn decode_name_and_fields(o: &mut Obj, b: &mut Bytes, common: &Common) -> Result
 
 fn decode_cdr(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<CentralDirRecord> {
     o.add("signature", precise(b, CENTRAL_DIR_SIG, opts.force))?;
-    o.add("version_made_by", u16_le(b))?;
-    o.add("version_needed", u16_le(b))?;
+    o.add("version_made_by", le::u16(b))?;
+    o.add("version_needed", le::u16(b))?;
     let common = decode_common(o, b)?;
 
-    let file_comment_len = o.add("file_comment_length", u16_le(b))?;
-    let disk_nr_start = o.add("disk_number_where_file_starts", u16_le(b))?;
-    o.add("internal_file_attributes", u16_le(b))?;
-    o.add("external_file_attributes", u32_le(b))?;
-    let local_file_offset = o.add("relative_offset_of_local_file_header", u32_le(b))?;
+    let file_comment_len = o.add("file_comment_length", le::u16(b))?;
+    let disk_nr_start = o.add("disk_number_where_file_starts", le::u16(b))?;
+    o.add("internal_file_attributes", le::u16(b))?;
+    o.add("external_file_attributes", le::u32(b))?;
+    let local_file_offset = o.add("relative_offset_of_local_file_header", le::u32(b))?;
 
     let zip64 = decode_name_and_fields(o, b, &common)?;
     o.add("file_comment", raw(b, file_comment_len.into()))?;
@@ -329,8 +329,8 @@ fn uncompress(b: Bytes, method: CompressionMethod) -> Val {
 }
 
 fn decode_extra_field(o: &mut Obj, b: &mut Bytes) -> Result<Option<Zip64>> {
-    let tag = o.add("tag", u16_le(b))?;
-    let size = o.add("size", u16_le(b))?;
+    let tag = o.add("tag", le::u16(b))?;
+    let size = o.add("size", le::u16(b))?;
     let (meta, v, mut b) = raw(b, size.into())?;
     o.add_mut("data", meta, |_, d| match tag {
         0x001 => decode_zip64(d.make_obj(), &mut b).map(Some),
@@ -355,15 +355,15 @@ fn decode_data_indicator(o: &mut Obj, b: &mut Bytes) -> Result<()> {
     if b.starts_with(DATA_INDICATOR_SIG) {
         o.add("signature", precise(b, DATA_INDICATOR_SIG, true))?;
     }
-    o.add("crc32_uncompressed", u32_le(b))?;
-    o.add("compressed_size", u32_le(b))?;
-    o.add("uncompressed_size", u32_le(b))?;
+    o.add("crc32_uncompressed", le::u32(b))?;
+    o.add("compressed_size", le::u32(b))?;
+    o.add("uncompressed_size", le::u32(b))?;
     Ok(())
 }
 
 fn decode_local_file(o: &mut Obj, b: &mut Bytes, opts: &Opts, cdr_common: &Common) -> Result<()> {
     o.add("signature", precise(b, LOCAL_FILE_SIG, opts.force))?;
-    o.add("version_needed", u16_le(b))?;
+    o.add("version_needed", le::u16(b))?;
     let lf_common = decode_common(o, b)?;
     let zip64 = decode_name_and_fields(o, b, &lf_common)?;
     // no file_comment here (unlike in central directory)
