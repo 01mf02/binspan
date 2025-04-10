@@ -1,6 +1,7 @@
 use crate::decode::*;
 use bitflags::bitflags;
 use bytes::Bytes;
+use core::fmt::Display;
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
@@ -59,6 +60,11 @@ fn decode_extensible_data(o: &mut Obj, b: &mut Bytes) -> Result {
     let data_size = o.add("size", le::u16(b))?;
     o.add("data", raw(b, data_size.into()))?;
     Ok(())
+}
+
+fn into_usize(i: impl TryInto<usize> + Copy + Display, b: &Bytes) -> Result<usize> {
+    let msg = || format!("expected unsigned machine-sized integer, found {i}");
+    i.try_into().map_err(|_| Error::new(b.clone(), msg()))
 }
 
 fn decode_eocd64(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralDirRecord> {
