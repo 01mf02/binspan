@@ -59,9 +59,7 @@ fn decode_file<'a>(o: &mut Obj, b: &mut Bytes) -> Result {
     o.add("typeflag", take_str(b, 1))?;
     o.add("linkname", take_str(b, 100))?;
     if b.starts_with(b"ustar\0") {
-        o.add_mut("ustar", Meta::from(&*b), |m, v| {
-            consume(b, m, |b| decode_ustar(v.make_obj(), b))
-        })?;
+        o.add_consumed("ustar", b, |b, v| decode_ustar(v.make_obj(), b))?;
     }
     o.add("header_block_padding", raw(b, padding(b)))?;
     let size: usize = size.try_into().unwrap();
@@ -71,16 +69,12 @@ fn decode_file<'a>(o: &mut Obj, b: &mut Bytes) -> Result {
 }
 
 pub fn decode_tar(o: &mut Obj, mut b: Bytes) -> Result {
-    o.add_mut("files", Meta::from(&b), |m, a| {
+    o.add_consumed("files", &mut b, |b, a| {
         let a = a.make_arr();
-        consume(&mut b, m, |b| {
-            while !b.starts_with(&END_MARKER) && !b.is_empty() {
-                a.add_mut(Meta::from(&*b), |m, o| {
-                    consume(b, m, |b| decode_file(o.make_obj(), b))
-                })?;
-            }
-            Ok(())
-        })
+        while !b.starts_with(&END_MARKER) && !b.is_empty() {
+            a.add_consumed(b, |b, o| decode_file(o.make_obj(), b))?;
+        }
+        Ok(())
     })?;
     // TODO: if !b.is_empty(), check presence of end marker
     Ok(())

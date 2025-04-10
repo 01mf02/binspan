@@ -76,11 +76,7 @@ fn decode_eocd64(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentral
     o.add_mut("extensible_data", Meta::from(&b), |_, ed| {
         let ed = ed.make_arr();
         while !b.is_empty() {
-            ed.add_mut(Meta::from(&b), |edr_slice, edr| {
-                consume(&mut b, edr_slice, |b| {
-                    decode_extensible_data(edr.make_obj(), b)
-                })
-            })?;
+            ed.add_consumed(&mut b, |b, v| decode_extensible_data(v.make_obj(), b))?;
         }
         Ok(())
     })?;
@@ -266,8 +262,8 @@ fn decode_zip64(o: &mut Obj, b: &mut Bytes) -> Result<Zip64> {
 fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
     let flags = o.add("flags", Ok(lazy_flags!(u16_le(b)?, Flags)))?;
     let compression_method = o.add("compression_method", u16_le(b))?;
-    o.add_mut("last_modification", Meta::from(&*b), |lm_meta, lm| {
-        consume(b, lm_meta, |b| decode_time_date(lm.make_obj(), b))
+    o.add_consumed("last_modification", b, |b, v| {
+        decode_time_date(v.make_obj(), b)
     })?;
     o.add("crc_32", u32_le(b))?;
     let compressed_size = o.add("compressed_size", u32_le(b))?;
@@ -347,9 +343,7 @@ fn decode_extra_field(o: &mut Obj, b: &mut Bytes) -> Result<Option<Zip64>> {
 fn decode_extra_fields(a: &mut Arr, mut b: Bytes) -> Result<Zip64> {
     let mut zip64 = Zip64::default();
     while !b.is_empty() {
-        let y = a.add_mut(Meta::from(&b), |ef_meta, ef| {
-            consume(&mut b, ef_meta, |b| decode_extra_field(ef.make_obj(), b))
-        })?;
+        let y = a.add_consumed(&mut b, |b, v| decode_extra_field(v.make_obj(), b))?;
         zip64 = y.unwrap_or(zip64);
     }
     Ok(zip64)
@@ -390,8 +384,8 @@ fn decode_local_file(o: &mut Obj, b: &mut Bytes, opts: &Opts, cdr_common: &Commo
     }
 
     if lf_common.flags.contains(Flags::data_descriptor) {
-        o.add_mut("data_indicator", Meta::from(&*b), |dd_meta, dd| {
-            consume(b, dd_meta, |b| decode_data_indicator(dd.make_obj(), b))
+        o.add_consumed("data_indicator", b, |b, v| {
+            decode_data_indicator(v.make_obj(), b)
         })?;
     }
     Ok(())
@@ -429,9 +423,7 @@ fn decode_eocds(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralD
 fn decode_cds(a: &mut Arr, mut b: Bytes, opts: &Opts) -> Result<Vec<CentralDirRecord>> {
     let mut cds = Vec::new();
     while !b.is_empty() {
-        cds.push(a.add_mut(Meta::from(&b), |cdr_slice, cdr| {
-            consume(&mut b, cdr_slice, |b| decode_cdr(cdr.make_obj(), b, &opts))
-        })?);
+        cds.push(a.add_consumed(&mut b, |b, v| decode_cdr(v.make_obj(), b, &opts))?);
     }
     Ok(cds)
 }
@@ -450,10 +442,8 @@ pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result {
         for cdr in cd.iter().filter(|cdr| cdr.disk_nr_start == eocd.disk_nr) {
             let offset: usize = cdr.local_file_offset.try_into().unwrap();
             let mut lfr_slice = try_slice(&b, offset..)?;
-            a.add_mut(Meta::from(&lfr_slice), |lfr_meta, lfr| {
-                consume(&mut lfr_slice, lfr_meta, |b| {
-                    decode_local_file(lfr.make_obj(), b, &opts, &cdr.common)
-                })
+            a.add_consumed(&mut lfr_slice, |b, v| {
+                decode_local_file(v.make_obj(), b, &opts, &cdr.common)
             })?;
         }
         Ok(())

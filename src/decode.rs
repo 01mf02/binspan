@@ -150,6 +150,13 @@ impl Obj {
         }
     }
 
+    pub fn add_consumed<T, F>(&mut self, field: &'static str, b: &mut Bytes, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut Bytes, &mut Val) -> Result<T>,
+    {
+        self.add_mut(field, Meta::from(&*b), |m, v| consume(b, m, |b| f(b, v)))
+    }
+
     pub fn add<T>(&mut self, field: &'static str, r: Result<Decoded<T>>) -> Result<T> {
         let (m, v, y) = r.map_err(|e| e.with_index(Index::Str(field)))?;
         self.0.push((field, m, v));
@@ -171,6 +178,13 @@ impl Arr {
             }),
             _ => unreachable!(),
         }
+    }
+
+    pub fn add_consumed<T, F>(&mut self, b: &mut Bytes, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut Bytes, &mut Val) -> Result<T>,
+    {
+        self.add_mut(Meta::from(&*b), |m, v| consume(b, m, |b| f(b, v)))
     }
 }
 
