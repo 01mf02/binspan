@@ -57,6 +57,7 @@ pub struct Meta {
     pub bytes: Bytes,
     description: Option<&'static str>,
     error: Option<Error>,
+    fmt: Option<fn(&Val) -> fmt::Result>,
 }
 
 impl From<Bytes> for Meta {
@@ -65,6 +66,7 @@ impl From<Bytes> for Meta {
             bytes,
             description: None,
             error: None,
+            fmt: None,
         }
     }
 }
