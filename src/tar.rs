@@ -1,13 +1,13 @@
 use crate::decode::*;
 use bytes::Bytes;
 
-fn trim(s: &str) -> &str {
-    s.trim_matches(' ')
-}
-
-/// Convert a potentially NUL-terminated string to UTF-8.
-fn utf8(s: &[u8]) -> &str {
-    core::str::from_utf8(s.iter().position(|c| *c == b'\0').map_or(s, |i| &s[..i])).unwrap()
+/// Take longest prefix of bytes until NUL.
+fn decode_str(b: Bytes) -> Bytes {
+    if let Some(i) = b.iter().position(|c| *c == b'\0') {
+        b.slice(..i)
+    } else {
+        b
+    }
 }
 
 fn decode_ustar(o: &mut Obj, b: &mut Bytes) -> Result {
@@ -24,18 +24,21 @@ fn decode_ustar(o: &mut Obj, b: &mut Bytes) -> Result {
 const BLOCK_BYTES: usize = 512;
 const END_MARKER: [u8; BLOCK_BYTES * 2] = [0; BLOCK_BYTES * 2];
 
-fn take_str(b: &mut Bytes, n: usize) -> Result<Decoded<String>> {
+fn take_str(b: &mut Bytes, n: usize) -> Result<Decoded<Bytes>> {
     let b = take(b, n)?;
-    let s = utf8(&b);
-    Ok((Meta::from(&b), Val::Str(s.into()), s.into()))
+    let m = Meta::from(&b);
+    let s = decode_str(b);
+    Ok((m, Val::Str(s.clone()), s))
 }
 
 macro_rules! take_oct_str {
     ($name: ident, $ty: ident, $f: expr, $width: expr) => {
         fn $name(b: &mut Bytes) -> Result<Decoded<$ty>> {
             let b = take(b, $width)?;
-            let s = utf8(&b);
-            let u = $ty::from_str_radix(trim(s), 8).unwrap();
+            // TODO: fail if not string or string contains non-digits
+            let s = decode_str(b.clone());
+            let s = core::str::from_utf8(&s).unwrap();
+            let u = $ty::from_str_radix(s.trim_matches(' '), 8).unwrap();
             Ok((Meta::from(b), $f(u), u))
         }
     };

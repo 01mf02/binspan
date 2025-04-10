@@ -79,7 +79,7 @@ pub enum Val {
     U32(u32),
     U64(u64),
     Raw { gap: bool },
-    Str(String),
+    Str(Bytes),
     Arr(Arr),
     Obj(Obj),
     Lazy(Rc<LazyCell<Val, Box<dyn FnOnce() -> Val>>>),
