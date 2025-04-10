@@ -25,15 +25,17 @@ struct EndOfCentralDirRecord {
 
 // Maximal size for ZIP-32: 4*16+2*32 bits = 128 bits
 fn decode_eocd_common(o: &mut Obj, b: &mut Bytes, zip64: bool) -> Result<EndOfCentralDirRecord> {
-    let u16_as_u32 = |b: &mut Bytes| u16_le(b).map(|(m, v, u)| (m, v, u.into()));
-    let u32_as_u64 = |b: &mut Bytes| u32_le(b).map(|(m, v, u)| (m, v, u.into()));
-    let small = if zip64 { u32_le } else { u16_as_u32 };
-    let large = if zip64 { u64_le } else { u32_as_u64 };
+    let u16_as_u32 = |b: &mut Bytes| le::u16(b).map(|(m, v, u)| (m, v, u.into()));
+    let u16_as_u64 = |b: &mut Bytes| le::u16(b).map(|(m, v, u)| (m, v, u.into()));
+    let u32_as_u64 = |b: &mut Bytes| le::u32(b).map(|(m, v, u)| (m, v, u.into()));
+    let small = if zip64 { le::u32 } else { u16_as_u32 };
+    let count = if zip64 { le::u64 } else { u16_as_u64 };
+    let large = if zip64 { le::u64 } else { u32_as_u64 };
 
     let disk_nr = o.add("disk_nr", small(b))?;
     o.add("start_disk_nr", small(b))?;
-    o.add("nr_of_central_dir_records_on_disk", small(b))?;
-    o.add("nr_of_central_dir_records", small(b))?;
+    o.add("nr_of_central_dir_records_on_disk", count(b))?;
+    o.add("nr_of_central_dir_records", count(b))?;
     let size_cd = o.add("size_of_central_dir", large(b))?;
     let offset_cd = o.add("offset_of_start_of_central_dir", large(b))?;
     Ok(EndOfCentralDirRecord {
