@@ -78,9 +78,11 @@ fn decode_eocd64(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentral
     let eocdr = decode_eocd_common(o, b, true)?;
 
     // number of bytes read by this function so far
-    const FIXED_FIELD_SIZE: u64 = 44;
-    let rest = size_eocd.checked_sub(FIXED_FIELD_SIZE);
-    let mut b = take(b, rest.and_then(|l| l.try_into().ok()).unwrap())?;
+    const READ: u64 = 44;
+    let msg = || format!("expected at least {READ}, found {size_eocd}");
+    let err = || Error::new(b.clone(), msg());
+    let rest: u64 = size_eocd.checked_sub(READ).ok_or_else(err)?;
+    let mut b = take(b, into_usize(rest, b)?)?;
     o.add_mut("extensible_data", Meta::from(&b), |_, ed| {
         let ed = ed.make_arr();
         while !b.is_empty() {
@@ -381,7 +383,7 @@ fn decode_local_file(o: &mut Obj, b: &mut Bytes, opts: &Opts, cdr_common: &Commo
         0 => cdr_common.compressed_size.into(),
         s => s,
     };
-    let compressed_size = compressed_size.try_into().unwrap();
+    let compressed_size = into_usize(compressed_size, b)?;
 
     if compressed_size > 0 {
         let (compressed_meta, _v, compressed) = raw(b, compressed_size)?;
@@ -419,7 +421,7 @@ fn decode_eocds(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralD
     if let Some(eocdl_abs) = find(&b, END_OF_CENTRAL_DIR_LOCATOR_SIG, 20) {
         let k = "end_of_central_directory_locator";
         let offset_eocd = add_with(o, k, b.split_off(eocdl_abs), opts, decode_eocdl)?;
-        let offset_eocd: usize = offset_eocd.try_into().unwrap();
+        let offset_eocd: usize = into_usize(offset_eocd, b)?;
 
         let k = "end_of_central_directory_record_zip64";
         add_with(o, k, try_split_off(b, offset_eocd)?, opts, decode_eocd64)
@@ -439,8 +441,10 @@ fn decode_cds(a: &mut Arr, mut b: Bytes, opts: &Opts) -> Result<Vec<CentralDirRe
 pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result {
     let eocd = decode_eocds(root, &mut b, opts)?;
 
-    let mut cd_slice = try_split_off(&mut b, eocd.offset_cd.try_into().unwrap())?;
-    try_split_off(&mut cd_slice, eocd.size_cd.try_into().unwrap())?;
+    let offset_cd = into_usize(eocd.offset_cd, &b)?;
+    let mut cd_slice = try_split_off(&mut b, offset_cd)?;
+    let size_cd = into_usize(eocd.size_cd, &cd_slice)?;
+    try_split_off(&mut cd_slice, size_cd)?;
     let cd = root.add_mut("central_directories", Meta::from(&cd_slice), |_, cd| {
         decode_cds(cd.make_arr(), cd_slice, opts)
     })?;
@@ -448,7 +452,7 @@ pub fn decode_zip(root: &mut Obj, mut b: Bytes, opts: &Opts) -> Result {
     root.add_mut("local_files", Meta::from(&b), |_, lf| {
         let a = lf.make_arr();
         for cdr in cd.iter().filter(|cdr| cdr.disk_nr_start == eocd.disk_nr) {
-            let offset: usize = cdr.local_file_offset.try_into().unwrap();
+            let offset = into_usize(cdr.local_file_offset, &b)?;
             let mut lfr_slice = try_slice(&b, offset..)?;
             a.add_consumed(&mut lfr_slice, |b, v| {
                 decode_local_file(v.make_obj(), b, &opts, &cdr.common)
