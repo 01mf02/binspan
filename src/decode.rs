@@ -19,13 +19,6 @@ pub enum Index {
     Int(usize),
 }
 
-#[derive(Clone, Debug)]
-pub enum Expect {
-    Bytes,
-    Int,
-    Raw(&'static [u8]),
-}
-
 impl Error {
     pub fn new(position: Bytes, msg: String) -> Self {
         Self {
