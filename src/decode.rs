@@ -34,7 +34,36 @@ impl Error {
     }
 }
 
-pub type Decoded<T> = (Meta, Val, T);
+pub struct Decoded<T> {
+    pub meta: Meta,
+    pub val: Val,
+    pub out: T,
+}
+
+impl<T> Decoded<T> {
+    pub fn new(meta: Meta, val: Val, out: T) -> Self {
+        Self { meta, val, out }
+    }
+
+    pub fn with_val(self, val: Val) -> Self {
+        Self { val, ..self }
+    }
+
+    pub fn map_meta(self, f: impl FnOnce(Meta) -> Meta) -> Self {
+        Self {
+            meta: f(self.meta),
+            ..self
+        }
+    }
+
+    pub fn map_out<U>(self, f: impl FnOnce(T) -> U) -> Decoded<U> {
+        Decoded {
+            out: f(self.out),
+            meta: self.meta,
+            val: self.val,
+        }
+    }
+}
 
 /// Metadata of a value.
 ///
@@ -174,9 +203,9 @@ impl Obj {
     }
 
     pub fn add<T>(&mut self, field: &'static str, r: Result<Decoded<T>>) -> Result<T> {
-        let (m, v, y) = r.map_err(|e| e.with_index(Index::Str(field)))?;
-        self.0.push((field, m, v));
-        Ok(y)
+        let d = r.map_err(|e| e.with_index(Index::Str(field)))?;
+        self.0.push((field, d.meta, d.val));
+        Ok(d.out)
     }
 }
 
@@ -268,7 +297,7 @@ macro_rules! decode_int {
             // SAFETY: if `take` returns `Ok(b)`, then `b.len() = $width`
             let a: [u8; $width] = (*b).try_into().unwrap();
             let u = $ty::$f(a);
-            Ok((Meta::from(b), $val(u), u))
+            Ok(Decoded::new(Meta::from(b), $val(u), u))
         }
     };
 }
@@ -283,7 +312,7 @@ pub mod le {
 
 pub fn raw(b: &mut Bytes, n: usize) -> Result<Decoded<Bytes>> {
     let b = take(b, n)?;
-    Ok((Meta::from(&b), Val::default(), b))
+    Ok(Decoded::new(Meta::from(&b), Val::default(), b))
 }
 
 pub fn precise(b: &mut Bytes, s: &[u8], force: bool) -> Result<Decoded<()>> {
@@ -291,7 +320,7 @@ pub fn precise(b: &mut Bytes, s: &[u8], force: bool) -> Result<Decoded<()>> {
     let err = || format!("expected byte sequence {:?}", byte_str(s));
     let b = take(b, s.len()).map_err(|e| Error { msg: err(), ..e })?;
     if b == s || force {
-        Ok((Meta::from(b), Val::default(), ()))
+        Ok(Decoded::new(Meta::from(b), Val::default(), ()))
     } else {
         Err(Error::new(&b, err()))
     }

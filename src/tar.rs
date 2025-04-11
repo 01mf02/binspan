@@ -28,7 +28,7 @@ fn take_str(b: &mut Bytes, n: usize) -> Result<Decoded<Bytes>> {
     let b = take(b, n)?;
     let m = Meta::from(&b);
     let s = decode_str(b);
-    Ok((m, Val::Str(s.clone()), s))
+    Ok(Decoded::new(m, Val::Str(s.clone()), s))
 }
 
 macro_rules! take_oct_str {
@@ -39,7 +39,7 @@ macro_rules! take_oct_str {
             let s = decode_str(b.clone());
             let s = core::str::from_utf8(&s).unwrap();
             let u = $ty::from_str_radix(s.trim_matches(' '), 8).unwrap();
-            Ok((Meta::from(b), $f(u), u))
+            Ok(Decoded::new(Meta::from(b), $f(u), u))
         }
     };
 }

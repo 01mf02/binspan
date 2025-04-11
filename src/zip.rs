@@ -26,9 +26,9 @@ struct EndOfCentralDirRecord {
 
 // Maximal size for ZIP-32: 4*16+2*32 bits = 128 bits
 fn decode_eocd_common(o: &mut Obj, b: &mut Bytes, zip64: bool) -> Result<EndOfCentralDirRecord> {
-    let u16_as_u32 = |b: &mut Bytes| le::u16(b).map(|(m, v, u)| (m, v, u.into()));
-    let u16_as_u64 = |b: &mut Bytes| le::u16(b).map(|(m, v, u)| (m, v, u.into()));
-    let u32_as_u64 = |b: &mut Bytes| le::u32(b).map(|(m, v, u)| (m, v, u.into()));
+    let u16_as_u32 = |b: &mut Bytes| le::u16(b).map(|d| d.map_out(Into::into));
+    let u16_as_u64 = |b: &mut Bytes| le::u16(b).map(|d| d.map_out(Into::into));
+    let u32_as_u64 = |b: &mut Bytes| le::u32(b).map(|d| d.map_out(Into::into));
     let small = if zip64 { le::u32 } else { u16_as_u32 };
     let count = if zip64 { le::u64 } else { u16_as_u64 };
     let large = if zip64 { le::u64 } else { u32_as_u64 };
@@ -161,11 +161,12 @@ macro_rules! flags_obj {
 }
 
 macro_rules! lazy_flags {
-    ($input: expr, $ty: ident) => {{
-        let (m, _v, u) = $input;
-        let flags = $ty::from_bits_retain(u);
-        let (m_, flags_) = (m.clone(), flags.clone());
-        (m, Val::lazy(move || flags_obj!(m_, flags_, $ty)), flags)
+    ($d: expr, $ty: ident) => {{
+        let d = $d;
+        let flags = $ty::from_bits_retain(d.out);
+        let (m_, flags_) = (d.meta.clone(), flags.clone());
+        let lazy = move || flags_obj!(m_, flags_, $ty);
+        Decoded::new(d.meta, Val::lazy(lazy), flags)
     }};
 }
 
@@ -188,12 +189,12 @@ fn decode_td<F>(b: &mut Bytes, f: F) -> Result<Decoded<u16>>
 where
     F: FnOnce(u16) -> [(&'static str, Val); 3],
 {
-    let (meta, _, time) = le::u16(b)?;
-    let span = meta.bytes.clone();
-    let entries = f(time);
+    let d = le::u16(b)?;
+    let span = d.meta.bytes.clone();
+    let entries = f(d.out);
     let entry = move |(k, v)| (k, Meta::from(span.clone()), v);
     let val = move || Val::Obj(Obj(entries.into_iter().map(entry).collect()));
-    Ok((meta, Val::lazy(val), time))
+    Ok(d.with_val(Val::lazy(val)))
 }
 
 fn decode_time_date(o: &mut Obj, b: &mut Bytes) -> Result<(u16, u16)> {
@@ -265,7 +266,11 @@ fn decode_zip64(o: &mut Obj, b: &mut Bytes) -> Result<Zip64> {
 
 fn decode_common(o: &mut Obj, b: &mut Bytes) -> Result<Common> {
     let flags = o.add("flags", Ok(lazy_flags!(le::u16(b)?, Flags)))?;
-    let compression_method = o.add("compression_method", le::u16(b))?;
+    let method = |d: Decoded<_>| {
+        let method = CompressionMethod::from_u16(d.out).map(|m| format!("{m:?}"));
+        d.map_meta(|m| m.describe(method))
+    };
+    let compression_method = o.add("compression_method", le::u16(b).map(method))?;
     o.add_consumed("last_modification", b, |b, v| {
         decode_time_date(v.make_obj(), b)
     })?;
@@ -333,12 +338,12 @@ fn uncompress(b: Bytes, method: CompressionMethod) -> Val {
 fn decode_extra_field(o: &mut Obj, b: &mut Bytes) -> Result<Option<Zip64>> {
     let tag = o.add("tag", le::u16(b))?;
     let size = o.add("size", le::u16(b))?;
-    let (meta, v, mut b) = raw(b, size.into())?;
-    o.add_mut("data", meta, |_, d| match tag {
-        0x001 => decode_zip64(d.make_obj(), &mut b).map(Some),
-        0x5455 => decode_extended_timestamp(d.make_obj(), &mut b).map(|_| None),
+    let mut d = raw(b, size.into())?;
+    o.add_mut("data", d.meta, |_, o| match tag {
+        0x001 => decode_zip64(o.make_obj(), &mut d.out).map(Some),
+        0x5455 => decode_extended_timestamp(o.make_obj(), &mut d.out).map(|_| None),
         _ => {
-            *d = v;
+            *o = d.val;
             Ok(None)
         }
     })
@@ -380,10 +385,10 @@ fn decode_local_file(o: &mut Obj, b: &mut Bytes, opts: &Opts, cdr_common: &Commo
     let compressed_size = into_usize(compressed_size, b)?;
 
     if compressed_size > 0 {
-        let (compressed_meta, _v, compressed) = raw(b, compressed_size)?;
+        let compressed = raw(b, compressed_size)?;
         let method = CompressionMethod::from_u16(lf_common.compression_method);
-        let f = |method| Val::lazy(move || uncompress(compressed.clone(), method));
-        let entry = (compressed_meta, method.map_or(Val::default(), f), ());
+        let f = |method| Val::lazy(move || uncompress(compressed.out, method));
+        let entry = Decoded::new(compressed.meta, method.map_or(Val::default(), f), ());
         o.add("compressed", Ok(entry))?;
     }
 
