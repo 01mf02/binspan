@@ -42,18 +42,27 @@ pub type Decoded<T> = (Meta, Val, T);
 #[derive(Clone, Debug)]
 pub struct Meta {
     pub bytes: Bytes,
-    description: Option<&'static str>,
     error: Option<Error>,
-    fmt: Option<fn(&Val) -> fmt::Result>,
+    format: Option<fn(&Val) -> fmt::Result>,
+    description: Option<String>,
+}
+
+impl Meta {
+    pub fn describe(self, description: Option<String>) -> Self {
+        Self {
+            description,
+            ..self
+        }
+    }
 }
 
 impl From<Bytes> for Meta {
     fn from(bytes: Bytes) -> Self {
         Self {
             bytes,
-            description: None,
             error: None,
-            fmt: None,
+            format: None,
+            description: None,
         }
     }
 }
