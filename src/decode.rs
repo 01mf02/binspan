@@ -20,11 +20,11 @@ pub enum Index {
 }
 
 impl Error {
-    pub fn new(position: Bytes, msg: String) -> Self {
+    pub fn new(position: &Bytes, msg: impl ToString) -> Self {
         Self {
-            position,
+            position: position.clone(),
             path: Vec::new(),
-            msg,
+            msg: msg.to_string(),
         }
     }
 
@@ -211,7 +211,7 @@ pub fn take(left: &mut Bytes, n: usize) -> Result<Bytes> {
 
 pub fn try_split_off(b: &mut Bytes, at: usize) -> Result<Bytes> {
     if at > b.len() {
-        Err(Error::new(b.clone(), format!("expected {at} bytes")))
+        Err(Error::new(b, format!("expected {at} bytes")))
     } else {
         Ok(b.split_off(at))
     }
@@ -240,7 +240,7 @@ fn to_range(bounds: impl RangeBounds<usize>, len: usize) -> Result<Range<usize>,
 
 // Panics if `range.start > range.end`!
 pub fn try_slice(b: &Bytes, range: impl RangeBounds<usize>) -> Result<Bytes> {
-    let err = |n| Error::new(b.clone(), format!("expected {n} bytes"));
+    let err = |n| Error::new(b, format!("expected {n} bytes"));
     Ok(b.slice(to_range(range, b.len()).map_err(err)?))
 }
 
@@ -293,6 +293,6 @@ pub fn precise(b: &mut Bytes, s: &[u8], force: bool) -> Result<Decoded<()>> {
     if b == s || force {
         Ok((Meta::from(b), Val::default(), ()))
     } else {
-        Err(Error::new(b, err()))
+        Err(Error::new(&b, err()))
     }
 }

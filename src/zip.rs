@@ -64,7 +64,7 @@ fn decode_extensible_data(o: &mut Obj, b: &mut Bytes) -> Result {
 
 fn into_usize(i: impl TryInto<usize> + Copy + Display, b: &Bytes) -> Result<usize> {
     let msg = || format!("expected unsigned machine-sized integer, found {i}");
-    i.try_into().map_err(|_| Error::new(b.clone(), msg()))
+    i.try_into().map_err(|_| Error::new(b, msg()))
 }
 
 fn decode_eocd64(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralDirRecord> {
@@ -80,7 +80,7 @@ fn decode_eocd64(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentral
     // number of bytes read by this function so far
     const READ: u64 = 44;
     let msg = || format!("expected at least {READ}, found {size_eocd}");
-    let err = || Error::new(b.clone(), msg());
+    let err = || Error::new(b, msg());
     let rest: u64 = size_eocd.checked_sub(READ).ok_or_else(err)?;
     let mut b = take(b, into_usize(rest, b)?)?;
     o.add_mut("extensible_data", Meta::from(&b), |_, ed| {
