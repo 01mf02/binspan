@@ -7,9 +7,9 @@ use num_traits::FromPrimitive;
 
 const CENTRAL_DIR_SIG: &[u8; 4] = b"PK\x01\x02";
 const LOCAL_FILE_SIG: &[u8; 4] = b"PK\x03\x04";
-const END_OF_CENTRAL_DIR_SIG: &[u8; 4] = b"PK\x05\x06";
-const END_OF_CENTRAL_DIR_64_SIG: &[u8; 4] = b"PK\x06\x06";
-const END_OF_CENTRAL_DIR_LOCATOR_SIG: &[u8; 4] = b"PK\x06\x07";
+const EOCD_SIG: &[u8; 4] = b"PK\x05\x06";
+const EOCD_64_SIG: &[u8; 4] = b"PK\x06\x06";
+const EOCD_LOCATOR_SIG: &[u8; 4] = b"PK\x06\x07";
 const DATA_INDICATOR_SIG: &[u8; 4] = b"PK\x07\x08";
 
 #[derive(Default)]
@@ -48,7 +48,7 @@ fn decode_eocd_common(o: &mut Obj, b: &mut Bytes, zip64: bool) -> Result<EndOfCe
 
 // Maximal size: 32+128+16+(2^16 * 8) bits = 524464 bits = 65558 bytes
 fn decode_eocd(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralDirRecord> {
-    o.add("signature", precise(b, END_OF_CENTRAL_DIR_SIG, opts.force))?;
+    o.add("signature", precise(b, EOCD_SIG, opts.force))?;
     let eocdr = decode_eocd_common(o, b, false)?;
     let comment_length = o.add("comment_length", le::u16(b))?;
     o.add("comment", raw(b, comment_length.into()))?;
@@ -68,10 +68,7 @@ fn into_usize(i: impl TryInto<usize> + Copy + Display, b: &Bytes) -> Result<usiz
 }
 
 fn decode_eocd64(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralDirRecord> {
-    o.add(
-        "signature",
-        precise(b, END_OF_CENTRAL_DIR_64_SIG, opts.force),
-    )?;
+    o.add("signature", precise(b, EOCD_64_SIG, opts.force))?;
     let size_eocd = o.add("size_of_end_of_central_directory", le::u64(b))?;
     o.add("version_made_by", le::u16(b))?;
     o.add("version_needed", le::u16(b))?;
@@ -96,10 +93,7 @@ fn decode_eocd64(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentral
 
 // Total size: 32+32+64+32 bits = 160 bits = 20 bytes
 fn decode_eocdl(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<u64> {
-    o.add(
-        "signature",
-        precise(b, END_OF_CENTRAL_DIR_LOCATOR_SIG, opts.force),
-    )?;
+    o.add("signature", precise(b, EOCD_LOCATOR_SIG, opts.force))?;
     o.add("disk_nr", le::u32(b))?;
     let offset_cdr = o.add("offset_of_end_of_central_dir_record", le::u64(b))?;
     o.add("total_disk_nr", le::u32(b))?;
@@ -413,12 +407,13 @@ where
 }
 
 fn decode_eocds(o: &mut Obj, b: &mut Bytes, opts: &Opts) -> Result<EndOfCentralDirRecord> {
-    // TODO: is this an error? or return Option?
-    let eocds_abs = find(&b, END_OF_CENTRAL_DIR_SIG, 65558).unwrap();
+    let eocds_abs = find(&b, EOCD_SIG, 65558)
+        .ok_or_else(|| Error::new(b, "could not find end of central directory"))?;
+
     let k = "end_of_central_directory_record";
     let eocd = add_with(o, k, b.split_off(eocds_abs), opts, decode_eocd)?;
 
-    if let Some(eocdl_abs) = find(&b, END_OF_CENTRAL_DIR_LOCATOR_SIG, 20) {
+    if let Some(eocdl_abs) = find(&b, EOCD_LOCATOR_SIG, 20) {
         let k = "end_of_central_directory_locator";
         let offset_eocd = add_with(o, k, b.split_off(eocdl_abs), opts, decode_eocdl)?;
         let offset_eocd: usize = into_usize(offset_eocd, b)?;
