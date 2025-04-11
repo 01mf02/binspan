@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use core::cell::LazyCell;
-use core::fmt;
+use core::fmt::{self, Debug, Formatter};
 use core::ops::{Range, RangeBounds};
 use std::rc::Rc;
 
@@ -73,7 +73,7 @@ impl From<&Bytes> for Meta {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum Val {
     Bool(bool),
     U8(u8),
@@ -85,6 +85,24 @@ pub enum Val {
     Arr(Arr),
     Obj(Obj),
     Lazy(Rc<LazyCell<Val, Box<dyn FnOnce() -> Val>>>),
+}
+
+impl Debug for Val {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let map = |&(ref k, ref m, ref v)| (k, (m, v));
+        match self {
+            Val::Bool(b) => b.fmt(f),
+            Val::U8(u) => u.fmt(f),
+            Val::U16(u) => u.fmt(f),
+            Val::U32(u) => u.fmt(f),
+            Val::U64(u) => u.fmt(f),
+            Val::Raw { .. } => "Raw".fmt(f),
+            Val::Str(s) => s.fmt(f),
+            Val::Arr(a) => a.0.fmt(f),
+            Val::Obj(o) => f.debug_map().entries(o.0.iter().map(map)).finish(),
+            Val::Lazy(l) => l.fmt(f),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
